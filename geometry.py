@@ -27,3 +27,36 @@ def count_coordinates_in_boundary(coordinates, x_bounds, y_bounds, z_bounds):
         z_bounds[0] <= z <= z_bounds[1]
         for x, y, z in coordinates
     )
+
+
+def calculate_nearest_boundary_distance(state, medium):
+    """
+    Calculates the nearest distance from the current particle position to the boundary of a medium.
+
+    Args:
+        state: Dictionary containing the particle's current state (keys: "x", "y", "z").
+        medium: Medium instance representing the medium of interest.
+
+    Returns:
+        The nearest distance to the boundary of the medium.
+    """
+    # Extract the current position of the particle from the state
+    x, y, z = state["x"], state["y"], state["z"]
+
+    # Extract the bounds of the medium
+    x_min, x_max = medium.x_bounds
+    y_min, y_max = medium.y_bounds
+    z_min, z_max = medium.z_bounds
+
+    # Calculate the distance to each boundary in all three dimensions
+    distances = [
+        max(0, x - x_min),  # Distance to the x_min boundary
+        max(0, x_max - x),  # Distance to the x_max boundary
+        max(0, y - y_min),  # Distance to the y_min boundary
+        max(0, y_max - y),  # Distance to the y_max boundary
+        max(0, z - z_min),  # Distance to the z_min boundary
+        max(0, z_max - z)   # Distance to the z_max boundary
+    ]
+
+    # Return the smallest positive distance to any boundary
+    return min(distances)
