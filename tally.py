@@ -60,3 +60,18 @@ class Tally:
             coord for coord in coordinates
             if x_min <= coord[0] <= x_max and y_min <= coord[1] <= y_max and z_min <= coord[2] <= z_max
         ]
+    def merge_partial_results(self, partial_results):
+        """
+        Merge partial results from a worker process.
+        """
+        self.results[partial_results["result"]] += 1
+
+        if partial_results["absorbed"]:
+            self.absorbed_coordinates.extend(partial_results["absorbed"])
+        if partial_results["fissioned"]:
+            self.fission_coordinates.extend(partial_results["fissioned"])
+        if partial_results["final_energy"] is not None:
+            self.energy_spectrum.append(partial_results["final_energy"])
+        if partial_results["region_detected"]:
+            self.region_count += 1
+
