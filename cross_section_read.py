@@ -1,12 +1,11 @@
+import os
 import h5py
 import numpy as np
-import os
 
 class CrossSectionReader:
     def __init__(self, base_path: str):
         """
         Initialize the CrossSectionReader with the base path to the data files.
-
         :param base_path: Base directory where HDF5 files are located.
         """
         self.base_path = base_path
@@ -14,7 +13,6 @@ class CrossSectionReader:
     def get_cross_section(self, element: str, mt: int, energy: float) -> float:
         """
         Get the cross-section for a specific nuclide, reaction, and energy.
-
         :param element: The nuclide in the format "U235" or "Pb208".
         :param mt: The reaction MT number (e.g., 18 for fission).
         :param energy: The energy in eV for which the cross-section is required.
@@ -35,8 +33,8 @@ class CrossSectionReader:
             raise FileNotFoundError(f"HDF5 file for {element} not found at {file_path}.")
 
         # Define HDF5 dataset paths
-        reaction_group_path = f"{element}/reactions/reaction_{mt_str}/1200K"
-        energy_path = f"{element}/energy/1200K"
+        reaction_group_path = f"{element}/reactions/reaction_{mt_str}/294K"
+        energy_path = f"{element}/energy/294K"
 
         # Read the HDF5 file
         try:
@@ -51,7 +49,6 @@ class CrossSectionReader:
                     raise KeyError(f"Reaction group path '{reaction_group_path}' not found in HDF5 file.")
                 if f"{reaction_group_path}/xs" not in f:
                     raise KeyError(f"Cross-section data not found at '{reaction_group_path}/xs'.")
-
                 xs_data = f[f"{reaction_group_path}/xs"][:]
                 threshold_idx = f[f"{reaction_group_path}/xs"].attrs.get('threshold_idx', 0)
 
@@ -68,21 +65,36 @@ class CrossSectionReader:
                     return 0.0  # Below threshold energy
                 cross_section = np.interp(energy, energy_data, xs_full)
                 return cross_section
+
         except (OSError, KeyError, ValueError) as e:
             raise RuntimeError(f"Error while reading HDF5 file: {e}") from e
 
-'''
-# Example usage
-if __name__ == "__main__":
-    base_path = "./"
-    reader = CrossSectionReader(base_path)
+    def calculate_macroscopic_xs(self, microscopic_xs: float, number_density: float) -> float:
+        """
+        Calculate macroscopic cross section from microscopic cross section and number density.
 
-    try:
-        element = "U235"
-        mt = 18  # Example reaction MT number
-        energy = 0.01  # Example energy in eV
-        cross_section = reader.get_cross_section(element, mt, energy)
-        print(f"Cross-section for {element} (MT={mt}) at {energy} eV: {cross_section:.4e} barns")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-'''
+        :param microscopic_xs: Microscopic cross section in barns (10⁻²⁴ cm²)
+        :param number_density: Number density in atoms/cm³
+        :return: Macroscopic cross section in cm⁻¹
+        :raises ValueError: If inputs are negative
+        """
+        if microscopic_xs < 0:
+            raise ValueError("Microscopic cross section cannot be negative")
+        if number_density < 0:
+            raise ValueError("Number density cannot be negative")
+
+        microscopic_xs_cm2 = microscopic_xs * 1e-24  # Convert barns to cm²
+        return microscopic_xs_cm2 * number_density
+
+    def get_macroscopic_xs(self, element: str, mt: int, energy: float, number_density: float) -> float:
+        """
+        Convenience method to get macroscopic cross section directly from element, MT number, and energy.
+
+        :param element: The nuclide in the format "U235" or "Pb208"
+        :param mt: The reaction MT number
+        :param energy: The energy in eV
+        :param number_density: Number density in atoms/cm³
+        :return: Macroscopic cross section in cm⁻¹
+        """
+        microscopic_xs = self.get_cross_section(element, mt, energy)
+        return self.calculate_macroscopic_xs(microscopic_xs, number_density)

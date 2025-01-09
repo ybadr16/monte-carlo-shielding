@@ -1,7 +1,7 @@
 # physics.py
 import math
 import random
-import numpy as np
+#import numpy as np
 
 def calculate_mu_lab(mu_cm, E, E_prime, A):
     term1 = mu_cm * math.sqrt(E_prime / E)
@@ -28,7 +28,7 @@ def calculate_E_cm_prime(initial_energy, A, sampler):
 
 def calculate_E_prime(E_cm_prime, initial_energy, A):
     E = initial_energy
-    mu_cm = 2 * np.random.uniform(0, 1) - 1  # Isotropic distribution in CM frame
+    mu_cm = 2 * random.uniform(0, 1) - 1  # Isotropic distribution in CM frame
 
     # Calculate E_prime (neutron energy in the lab frame after scattering)
     E_prime = E_cm_prime + (E + 2 * mu_cm * (A + 1) * math.sqrt(E * E_cm_prime)) / ((A + 1)**2)
@@ -52,4 +52,4 @@ def sample_new_direction_cosines(u, v, w, mu_lab):
     u_new = mu_lab * u + root_term * (u * w * math.cos(phi) - v * math.sin(phi)) / denom
     v_new = mu_lab * v + root_term * (v * w * math.cos(phi) + u * math.sin(phi)) / denom
     w_new = mu_lab * w - root_term * math.cos(phi) / denom
-    return u_new, v_new, w_new
+    return u_new, v_new, w_new, phi, mu_lab
