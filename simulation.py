@@ -1,6 +1,5 @@
 # simulation.py
 from geometry import calculate_direction_cosines, calculate_nearest_boundary_distance
-from cross_sections import get_cross_sections
 from physics import elastic_scattering, sample_new_direction_cosines
 import math
 import random
@@ -93,8 +92,8 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
             continue
 
         # Get cross-sections for the current medium
-        sigma_s, sigma_a, sigma_f, Sigma_t = get_cross_sections(
-            reader, current_medium.element, state["energy"], sampler, N
+        sigma_s, sigma_a, sigma_f, Sigma_t = reader.get_cross_sections(
+            current_medium.element, state["energy"], sampler, N
         )
 
         # Calculate distance to next interaction
