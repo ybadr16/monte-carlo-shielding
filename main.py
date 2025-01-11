@@ -6,8 +6,8 @@ from simulation import simulate_single_particle
 from material import Material
 from medium import Medium
 from multiprocessing import Pool
-from tally import Tally  # Import the Tally class
-import numpy as np
+from tally import Tally
+from random_number_generator import RNGHandler
 import math
 import json
 
@@ -33,7 +33,8 @@ def main():
 
 
     # Simulate particles
-    num_particles = 100_00
+    num_particles = 100
+    rngs = [RNGHandler(seed=12345 + i) for i in range(num_particles)]
 
     # Initialize Tally object
     tally = Tally()
@@ -42,12 +43,12 @@ def main():
     particle_states = [
         {
             "x": -10.0, "y": 0.0, "z": 0.0,
-            "theta": np.random.uniform(0, math.pi),
-            "phi": np.random.uniform(0, 2 * math.pi),
+            "theta": rng.uniform(0, math.pi),
+            "phi": rng.uniform(0, 2 * math.pi),
             "has_interacted": False,
             "energy": 1e6,  # eV
         }
-        for _ in range(num_particles)
+        for rng in rngs
     ]
 
     # Dictionary to store trajectories for all particles
@@ -57,7 +58,10 @@ def main():
 
     track = False
     # Prepare arguments for multiprocessing
-    args = [(state, reader, mediums, A, N, sampler, region_bounds, track) for state in particle_states]
+    args = [
+        (state, reader, mediums, A, N, sampler, region_bounds, track, rng)
+        for state, rng in zip(particle_states, rngs)
+    ]
 
     # Use multiprocessing to simulate particles
     with Pool() as pool:
