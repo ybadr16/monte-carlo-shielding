@@ -60,7 +60,7 @@ def main():
     # For tracking if a particle existed within a certain region (x_min, x_max, y_min, y_max, z_min, z_max)
     region_bounds = (14.9, 15.1, -15, 15, -15, 15)
 
-    track = True
+    track = False
     # Prepare arguments for multiprocessing
     args = [(state, reader, mediums, A, N, sampler, region_bounds, track) for state in particle_states]
 
