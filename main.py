@@ -6,11 +6,11 @@ from simulation import simulate_single_particle
 from material import Material
 from medium import Medium
 from multiprocessing import Pool
-from tally import Tally  # Import the Tally class
-import numpy as np
+from tally import Tally
+from random_number_generator import RNGHandler
 import math
 import json
-
+import time
 
 def main():
     # Initialize cross-section reader and sampler
@@ -33,7 +33,9 @@ def main():
 
 
     # Simulate particles
-    num_particles = 100_00
+    num_particles = 100_000
+
+    rngs = [RNGHandler(seed=12345 + i) for i in range(num_particles)]
 
     # Initialize Tally object
     tally = Tally()
@@ -42,12 +44,12 @@ def main():
     particle_states = [
         {
             "x": -10.0, "y": 0.0, "z": 0.0,
-            "theta": np.random.uniform(0, math.pi),
-            "phi": np.random.uniform(0, 2 * math.pi),
+            "theta": rng.uniform(0, math.pi),
+            "phi": rng.uniform(0, 2 * math.pi),
             "has_interacted": False,
             "energy": 1e6,  # eV
         }
-        for _ in range(num_particles)
+        for rng in rngs
     ]
 
     # Dictionary to store trajectories for all particles
@@ -57,11 +59,16 @@ def main():
 
     track = False
     # Prepare arguments for multiprocessing
-    args = [(state, reader, mediums, A, N, sampler, region_bounds, track) for state in particle_states]
+    args = [
+        (state, reader, mediums, A, N, sampler, region_bounds, track, rng)
+        for state, rng in zip(particle_states, rngs)
+    ]
 
     # Use multiprocessing to simulate particles
+    sim_start_time = time.perf_counter()
     with Pool() as pool:
         partial_results = pool.map(simulate_single_particle, args)
+    sim_end_time = time.perf_counter()
 
     # Merge partial results into the main tally
     for idx, result in enumerate(partial_results):
@@ -74,12 +81,12 @@ def main():
     # Output all trajectories
     with open("all_trajectories.json", "w") as f:
         json.dump(all_trajectories, f, indent=4)
-    #print("All particle trajectories:")
-    #for particle_id, trajectory in all_trajectories.items():
-    #    print(f"Particle {particle_id} trajectory: {trajectory}")
 
     # Output results
     tally.print_summary(num_particles)
+
+    print(f"Particle simulation time: {sim_end_time - sim_start_time:.2f} seconds")
+    print(f"Average time per particle: {(sim_end_time - sim_start_time) / num_particles:.4f} seconds")
 
 if __name__ == "__main__":
     main()
