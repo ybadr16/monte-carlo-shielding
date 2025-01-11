@@ -2,17 +2,17 @@
 from geometry import calculate_direction_cosines, calculate_nearest_boundary_distance
 from physics import elastic_scattering, sample_new_direction_cosines
 import math
-import random
+import numpy as np
 
 def simulate_single_particle(args):
     """
     Simulates a single particle and returns partial tally results.
     """
-    state, reader, mediums, A, N, sampler, region_bounds, track_coordinates = args
+    state, reader, mediums, A, N, sampler, region_bounds, track_coordinates, rng = args
 
     # Call the updated simulate_particle function
     result, absorbed, fissioned, _, final_energy, region_count, trajectory = simulate_particle(
-        state, reader, mediums, A, N, sampler, region_bounds, track_coordinates=track_coordinates
+        state, reader, mediums, A, N, sampler, region_bounds, track_coordinates=track_coordinates, rng=rng
     )
 
     # Return results including trajectory if tracking was enabled
@@ -25,7 +25,7 @@ def simulate_single_particle(args):
         "trajectory": trajectory if track_coordinates else None,
     }
 
-def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None, track_coordinates=False):
+def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None, track_coordinates=False, rng= None):
     """
     Simulate the trajectory of a single particle through multiple mediums.
 
@@ -81,7 +81,7 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
         if current_medium.is_void:
             # Calculate the free propagation distance without interaction
             #nearest_distance = calculate_nearest_boundary_distance(state, mediums[0]) #be careful of this approach, its not dynamic enough to accomodate multiple mediums. Only works for this case.
-            si = random.uniform(0.1, 10.0)  # Arbitrary step size for free streaming
+            si = rng.uniform(0.1, 10.0)  # Arbitrary step size for free streaming
             #si = nearest_distance
             state["x"] += si * math.sin(state["theta"]) * math.cos(state["phi"])
             state["y"] += si * math.sin(state["theta"]) * math.sin(state["phi"])
@@ -97,7 +97,7 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
         )
 
         # Calculate distance to next interaction
-        si = -math.log(1 - random.random()) / Sigma_t
+        si = -math.log(1 - rng.random()) / Sigma_t
 
         # Update position
         if not state["has_interacted"] and not current_medium.is_void:
@@ -117,7 +117,7 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
             continue
 
         # Determine type of interaction
-        interaction_prob = random.random()
+        interaction_prob = rng.random()
         if interaction_prob < sigma_s / Sigma_t:  # Scattering
             #print(f"Theta before scattering: {state['theta']}")
             state["has_interacted"] = True
@@ -136,8 +136,8 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
             fission_coordinates.append((state["x"], state["y"], state["z"]))
             new_particles = [
                 {"x": state["x"], "y": state["y"], "z": state["z"],
-                 "theta": random.uniform(0, math.pi),
-                 "phi": random.uniform(0, 2 * math.pi),
+                 "theta": np.random.uniform(0, math.pi), #Needs to be edited for RNG
+                 "phi": np.random.uniform(0, 2 * math.pi), #Needs to be edited for RNG
                  "energy": state["energy"]}
                 for _ in range(2)
             ]
