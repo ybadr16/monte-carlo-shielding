@@ -74,9 +74,6 @@ def main():
     # Output all trajectories
     with open("all_trajectories.json", "w") as f:
         json.dump(all_trajectories, f, indent=4)
-    #print("All particle trajectories:")
-    #for particle_id, trajectory in all_trajectories.items():
-    #    print(f"Particle {particle_id} trajectory: {trajectory}")
 
     # Output results
     tally.print_summary(num_particles)
