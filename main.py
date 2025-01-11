@@ -10,7 +10,7 @@ from tally import Tally
 from random_number_generator import RNGHandler
 import math
 import json
-
+import time
 
 def main():
     # Initialize cross-section reader and sampler
@@ -33,7 +33,8 @@ def main():
 
 
     # Simulate particles
-    num_particles = 100
+    num_particles = 100_000
+
     rngs = [RNGHandler(seed=12345 + i) for i in range(num_particles)]
 
     # Initialize Tally object
@@ -64,8 +65,10 @@ def main():
     ]
 
     # Use multiprocessing to simulate particles
+    sim_start_time = time.perf_counter()
     with Pool() as pool:
         partial_results = pool.map(simulate_single_particle, args)
+    sim_end_time = time.perf_counter()
 
     # Merge partial results into the main tally
     for idx, result in enumerate(partial_results):
@@ -81,6 +84,9 @@ def main():
 
     # Output results
     tally.print_summary(num_particles)
+
+    print(f"Particle simulation time: {sim_end_time - sim_start_time:.2f} seconds")
+    print(f"Average time per particle: {(sim_end_time - sim_start_time) / num_particles:.4f} seconds")
 
 if __name__ == "__main__":
     main()

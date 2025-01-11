@@ -22,3 +22,4 @@ class RNGHandler:
     def choice(self, a, size=None, replace=True, p=None):
         """Generate random choices from a sequence."""
         return self.rng.choice(a, size=size, replace=replace, p=p)
+
