@@ -3,7 +3,7 @@ from collections import deque
 from cross_section_read import CrossSectionReader
 from vt_calc import VelocitySampler
 from simulation import simulate_single_particle
-from material import calculate_number_density
+from material import Material
 from medium import Medium
 from multiprocessing import Pool
 from tally import Tally  # Import the Tally class
@@ -12,14 +12,18 @@ import math
 import json
 
 
-
-
 def main():
     # Initialize cross-section reader and sampler
     base_path = "./endfb"
     reader = CrossSectionReader(base_path)
-    sampler = VelocitySampler(mass=3.44e-25, temperature=294)  # mass for Pb
-    #sampler = VelocitySampler(mass=1.864e-25, temperature=294) #mass for cd
+
+    lead = Material(name="Lead", density=11.35, atomic_mass=208, atomic_weight_ratio=2.5)
+    cadmium = Material(name="Cadmium", density=8.65, atomic_mass=112, atomic_weight_ratio=2.3) #example for defining another element
+
+    N = lead.number_density
+    A = lead.atomic_weight_ratio
+    mass_in_kg = lead.kg_mass
+    sampler = VelocitySampler(mass=mass_in_kg)  # mass for Pb
 
     # Define mediums
     mediums = [
@@ -28,17 +32,8 @@ def main():
     ]
 
 
-    # Atomic weight ratio for Pb
-    A = 2.5
-
-    #for cadmium
-    #A = 2.3
-
-    N = calculate_number_density(11.35, 208) #for Pb as well
-
-    #N = calculate_number_density(8.65, 112) # for CD
     # Simulate particles
-    num_particles = 100
+    num_particles = 100_00
 
     # Initialize Tally object
     tally = Tally()
