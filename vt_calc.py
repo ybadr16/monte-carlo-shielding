@@ -76,16 +76,4 @@ class VelocitySampler:
                 return v_t
 
         raise ValueError("Failed to find an accepted sample within the maximum attempts")
-'''
-# Example inputs
-vn = 3.0  # Velocity magnitude
-# Create a sampler instance with specific mass and temperature
-sampler = VelocitySampler(mass=1.0e-27, temperature=300)
 
-# Sample a velocity
-try:
-    v_t = sampler.sample_velocity(vn=3)
-    print(f"Sampled velocity: {v_t}")
-except ValueError as e:
-    print(f"Sampling failed: {e}")
-'''
