@@ -4,7 +4,7 @@ import numpy as np
 class VelocitySampler:
     """A class for sampling velocities based on nuclear physics calculations."""
 
-    def __init__(self, mass, temperature):
+    def __init__(self, mass, temperature = 294):
         """
         Initialize the VelocitySampler with mass and temperature parameters.
 
