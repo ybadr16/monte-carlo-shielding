@@ -43,7 +43,7 @@ def main():
     # Initialize particle queue
     particle_states = [
         {
-            "x": -10.0, "y": 0.0, "z": 0.0,
+            "x": -10.5, "y": 0.0, "z": 0.0,
             "theta": rng.uniform(0, math.pi),
             "phi": rng.uniform(0, 2 * math.pi),
             "has_interacted": False,
