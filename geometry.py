@@ -29,7 +29,7 @@ def count_coordinates_in_boundary(coordinates, x_bounds, y_bounds, z_bounds):
     )
 
 
-def move_to_nearest_boundary(state, mediums, epsilon=1e-6):
+def move_to_nearest_boundary(state, mediums, u, v, w, epsilon=1e-6):
     """
     Moves the particle to the nearest boundary and applies a small offset to ensure it's within the next medium.
 
@@ -43,10 +43,10 @@ def move_to_nearest_boundary(state, mediums, epsilon=1e-6):
         nearest_medium: The medium the particle is now inside.
     """
     x, y, z = state["x"], state["y"], state["z"]
-    u = math.sin(state["theta"]) * math.cos(state["phi"])
-    v = math.sin(state["theta"]) * math.sin(state["phi"])
-    w = math.cos(state["theta"])
-
+    #u = math.sin(state["theta"]) * math.cos(state["phi"])
+    #v = math.sin(state["theta"]) * math.sin(state["phi"])
+    #w = math.cos(state["theta"])
+    #print(f"This is from move_to_nearest_boundary: {u}, {v}, {w}")
     nearest_distance = float('inf')
     nearest_point = None
     nearest_medium = None
@@ -117,3 +117,16 @@ def move_to_nearest_boundary(state, mediums, epsilon=1e-6):
         state["z"] += epsilon * w
 
     return state, nearest_medium
+
+
+def calculate_void_si_max(mediums):
+    # Find the void medium
+    void_medium = next((m for m in mediums if m.is_void), None)
+    if void_medium:
+        x_range = void_medium.x_bounds[1] - void_medium.x_bounds[0]
+        y_range = void_medium.y_bounds[1] - void_medium.y_bounds[0]
+        z_range = void_medium.z_bounds[1] - void_medium.z_bounds[0]
+        # Diagonal of the bounding box
+        si_max = math.sqrt(x_range**2 + y_range**2 + z_range**2)
+        return si_max
+    return float('inf')  # No void medium, no limit
