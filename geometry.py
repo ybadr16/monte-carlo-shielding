@@ -1,11 +1,11 @@
 # geometry.py
-import math
+import numpy as np
 
 def calculate_direction_cosines(x, y, z, x_prev, y_prev, z_prev):
     delta_x = x - x_prev
     delta_y = y - y_prev
     delta_z = z - z_prev
-    delta_s = math.sqrt(delta_x**2 + delta_y**2 + delta_z**2)
+    delta_s = np.sqrt(delta_x**2 + delta_y**2 + delta_z**2)
     return delta_x / delta_s, delta_y / delta_s, delta_z / delta_s
 
 def count_coordinates_in_boundary(coordinates, x_bounds, y_bounds, z_bounds):
@@ -29,7 +29,7 @@ def count_coordinates_in_boundary(coordinates, x_bounds, y_bounds, z_bounds):
     )
 
 
-def move_to_nearest_boundary(state, mediums, u, v, w, epsilon=1e-6):
+def calculate_nearest_boundary(state, mediums, u, v, w, epsilon=1e-6):
     """
     Moves the particle to the nearest boundary and applies a small offset to ensure it's within the next medium.
 
@@ -104,15 +104,7 @@ def move_to_nearest_boundary(state, mediums, u, v, w, epsilon=1e-6):
                     nearest_point = point
                     nearest_medium = medium
 
-    # Move particle to the nearest boundary
-    if nearest_point:
-        state["x"], state["y"], state["z"] = nearest_point
-        # Apply a small offset in the direction of travel
-        state["x"] += epsilon * u
-        state["y"] += epsilon * v
-        state["z"] += epsilon * w
-
-    return state, nearest_medium
+    return nearest_point, nearest_medium, nearest_distance
 
 
 def calculate_void_si_max(mediums):
@@ -123,6 +115,6 @@ def calculate_void_si_max(mediums):
         y_range = void_medium.y_bounds[1] - void_medium.y_bounds[0]
         z_range = void_medium.z_bounds[1] - void_medium.z_bounds[0]
         # Diagonal of the bounding box
-        si_max = math.sqrt(x_range**2 + y_range**2 + z_range**2)
+        si_max = np.sqrt(x_range**2 + y_range**2 + z_range**2)
         return si_max
     return float('inf')  # No void medium, no limit

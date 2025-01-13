@@ -8,9 +8,9 @@ from medium import Medium
 from multiprocessing import Pool
 from tally import Tally
 from random_number_generator import RNGHandler
-import math
 import json
 import time
+import numpy as np
 
 def main():
     # Initialize cross-section reader and sampler
@@ -33,7 +33,7 @@ def main():
 
 
     # Simulate particles
-    num_particles = 10000
+    num_particles = 1000
 
     rngs = [RNGHandler(seed=12345 + i) for i in range(num_particles)]
 
@@ -44,8 +44,8 @@ def main():
     particle_states = [
         {
             "x": -10.5, "y": 0.0, "z": 0.0,
-            "theta": rng.uniform(0, math.pi),
-            "phi": rng.uniform(0, 2 * math.pi),
+            "theta": rng.uniform(0, np.pi),
+            "phi": rng.uniform(0, 2 * np.pi),
             "has_interacted": False,
             "energy": 1e6,  # eV
         }
@@ -57,7 +57,7 @@ def main():
     # For tracking if a particle existed within a certain region (x_min, x_max, y_min, y_max, z_min, z_max)
     region_bounds = (14.9, 15.1, -15, 15, -15, 15)
 
-    track = True
+    track = False
     # Prepare arguments for multiprocessing
     args = [
         (state, reader, mediums, A, N, sampler, region_bounds, track, rng)
