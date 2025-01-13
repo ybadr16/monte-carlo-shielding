@@ -1,7 +1,8 @@
 # simulation.py
-from geometry import calculate_direction_cosines, move_to_nearest_boundary
+from geometry import calculate_direction_cosines, move_to_nearest_boundary, calculate_void_si_max
 from physics import elastic_scattering, sample_new_direction_cosines
 import numpy as np
+import math
 
 def simulate_single_particle(args):
     """
@@ -58,7 +59,7 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
     while True:
         # Track coordinates if enabled
 
-        if track_coordinates and state["has_interacted"]:
+        if track_coordinates:
             trajectory.append((state["x"], state["y"], state["z"]))#, sigma_s, sigma_a, sigma_f, Sigma_t))
 
         # Determine the current medium based on highest priority
@@ -80,7 +81,7 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
             return "escaped", absorbed_coordinates, fission_coordinates, None, state["energy"], region_count, trajectory
 
         if current_medium.is_void:
-            state, nearest_medium = move_to_nearest_boundary(state, mediums)
+            state, nearest_medium = move_to_nearest_boundary(state, mediums, u, v, w)
             continue
 
         # Get cross-sections for the current medium
@@ -90,6 +91,9 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
 
         # Calculate distance to next interaction
         si = -np.log(1 - rng.random()) / Sigma_t
+        # Clamp si to the maximum distance in the void medium
+        void_si_max = calculate_void_si_max(mediums)
+        si = min(si, void_si_max)
 
         state["x"] += si * u
         state["y"] += si * v
@@ -105,9 +109,11 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
         if interaction_prob < sigma_s / Sigma_t:  # Scattering
             #print(f"Theta before scattering: {state['theta']}")
             state["has_interacted"] = True
-            E_prime, mu_cm, mu_lab = elastic_scattering(state["energy"], A, sampler)
+            E_prime, mu_cm, mu_lab = elastic_scattering(state["energy"], A, sampler, rng)
+            state["theta"] = np.arccos(mu_lab)
             state["energy"] = E_prime
-            u, v, w, state["phi"], state["theta"] = sample_new_direction_cosines(u, v, w, mu_lab)
+            u, v, w, state["phi"] = sample_new_direction_cosines(u, v, w, mu_lab, rng)
+
             #print(f"Theta after scattering: {state['theta']}")
 
         elif interaction_prob < (sigma_s + sigma_a) / Sigma_t:  # Absorption
