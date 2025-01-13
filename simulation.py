@@ -1,8 +1,7 @@
 # simulation.py
-from geometry import calculate_direction_cosines, move_to_nearest_boundary, calculate_void_si_max
+from geometry import calculate_nearest_boundary, calculate_void_si_max
 from physics import elastic_scattering, sample_new_direction_cosines
 import numpy as np
-import math
 
 def simulate_single_particle(args):
     """
@@ -47,6 +46,7 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
         region_count: Number of times the particle was detected in the region.
         trajectory: List of all coordinates if track_coordinates is True, otherwise None.
     """
+    epsilon=1e-6
     region_count = 0
     absorbed_coordinates = []
     fission_coordinates = []
@@ -55,12 +55,11 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
     u = np.sin(state["theta"]) * np.cos(state["phi"])
     v = np.sin(state["theta"]) * np.sin(state["phi"])
     w = np.cos(state["theta"])
-    #sigma_s, sigma_a, sigma_f, Sigma_t = 0, 0, 0, 0
     while True:
         # Track coordinates if enabled
 
         if track_coordinates:
-            trajectory.append((state["x"], state["y"], state["z"]))#, sigma_s, sigma_a, sigma_f, Sigma_t))
+            trajectory.append((state["x"], state["y"], state["z"]))#You can add other stuff for tracking, ex: sigma_s, sigma_a, Energy, etc..
 
         # Determine the current medium based on highest priority
         if region_bounds:
@@ -80,8 +79,14 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
             # Particle is outside all defined mediums, escapes
             return "escaped", absorbed_coordinates, fission_coordinates, None, state["energy"], region_count, trajectory
 
+        nearest_point, nearest_medium, nearest_distance = calculate_nearest_boundary(state, mediums, u, v, w)
+
         if current_medium.is_void:
-            state, nearest_medium = move_to_nearest_boundary(state, mediums, u, v, w)
+            state["x"], state["y"], state["z"] = nearest_point
+            # Apply a small offset in the direction of travel
+            state["x"] += epsilon * u
+            state["y"] += epsilon * v
+            state["z"] += epsilon * w
             continue
 
         # Get cross-sections for the current medium
@@ -91,9 +96,13 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
 
         # Calculate distance to next interaction
         si = -np.log(1 - rng.random()) / Sigma_t
-        # Clamp si to the maximum distance in the void medium
-        void_si_max = calculate_void_si_max(mediums)
-        si = min(si, void_si_max)
+
+        if si > nearest_distance:
+            state["x"], state["y"], state["z"] = nearest_point
+            state["x"] += epsilon * u
+            state["y"] += epsilon * v
+            state["z"] += epsilon * w
+            continue
 
         state["x"] += si * u
         state["y"] += si * v
@@ -107,27 +116,13 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
         # Determine type of interaction
         interaction_prob = rng.random()
         if interaction_prob < sigma_s / Sigma_t:  # Scattering
-            #print(f"Theta before scattering: {state['theta']}")
             state["has_interacted"] = True
             E_prime, mu_cm, mu_lab = elastic_scattering(state["energy"], A, sampler, rng)
             state["theta"] = np.arccos(mu_lab)
             state["energy"] = E_prime
             u, v, w, state["phi"] = sample_new_direction_cosines(u, v, w, mu_lab, rng)
 
-            #print(f"Theta after scattering: {state['theta']}")
-
         elif interaction_prob < (sigma_s + sigma_a) / Sigma_t:  # Absorption
             state["has_interacted"] = True
             absorbed_coordinates.append((state["x"], state["y"], state["z"]))
             return "absorbed", absorbed_coordinates, fission_coordinates, None, state["energy"], region_count, trajectory
-        elif interaction_prob < (sigma_s + sigma_a + sigma_f) / Sigma_t:  # Fission
-            state["has_interacted"] = True
-            fission_coordinates.append((state["x"], state["y"], state["z"]))
-            new_particles = [
-                {"x": state["x"], "y": state["y"], "z": state["z"],
-                 "theta": np.random.uniform(0, np.pi), #Needs to be edited for RNG
-                 "phi": np.random.uniform(0, 2 * np.pi), #Needs to be edited for RNG
-                 "energy": state["energy"]}
-                for _ in range(2)
-            ]
-            return "fission", absorbed_coordinates, fission_coordinates, new_particles, state["energy"], region_count, trajectory
