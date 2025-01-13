@@ -51,5 +51,4 @@ def sample_new_direction_cosines(u, v, w, mu_lab, rng):
     v_new = mu_lab * v + root_term * (v * w * math.cos(phi) + u * math.sin(phi)) / denom
     w_new = mu_lab * w - root_term * math.cos(phi) * denom
     assert abs(u_new**2 + v_new**2 + w_new**2 - 1.0) < 1e-6
-    #print(u_new, v_new, w_new)
     return u_new, v_new, w_new, phi

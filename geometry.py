@@ -43,10 +43,6 @@ def move_to_nearest_boundary(state, mediums, u, v, w, epsilon=1e-6):
         nearest_medium: The medium the particle is now inside.
     """
     x, y, z = state["x"], state["y"], state["z"]
-    #u = math.sin(state["theta"]) * math.cos(state["phi"])
-    #v = math.sin(state["theta"]) * math.sin(state["phi"])
-    #w = math.cos(state["theta"])
-    #print(f"This is from move_to_nearest_boundary: {u}, {v}, {w}")
     nearest_distance = float('inf')
     nearest_point = None
     nearest_medium = None
