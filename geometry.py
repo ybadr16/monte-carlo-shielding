@@ -1,5 +1,7 @@
 # geometry.py
 import numpy as np
+from medium import Region
+
 
 def calculate_direction_cosines(x, y, z, x_prev, y_prev, z_prev):
     delta_x = x - x_prev
@@ -28,83 +30,61 @@ def count_coordinates_in_boundary(coordinates, x_bounds, y_bounds, z_bounds):
         for x, y, z in coordinates
     )
 
-
-def calculate_nearest_boundary(state, mediums, u, v, w, epsilon=1e-6):
+def calculate_nearest_boundary(state, regions, u, v, w, epsilon=1e-6):
     """
-    Moves the particle to the nearest boundary and applies a small offset to ensure it's within the next medium.
+    Moves the particle to the nearest boundary in a CSG region.
 
     Args:
         state: Dictionary representing the particle's state (x, y, z, theta, phi).
-        mediums: List of Medium instances.
-        epsilon: Small offset to move the particle slightly inside the new medium.
+        regions: List of CSG regions to analyze.
+        u, v, w: Direction vector components.
+        epsilon: Small offset to move the particle slightly inside the new region.
 
     Returns:
-        state: Updated particle state with new (x, y, z) position.
-        nearest_medium: The medium the particle is now inside.
+        nearest_point: Nearest boundary point (x, y, z).
+        nearest_region: Region the particle is now inside.
+        nearest_distance: Distance to the nearest boundary.
     """
     x, y, z = state["x"], state["y"], state["z"]
     nearest_distance = float('inf')
     nearest_point = None
-    nearest_medium = None
+    nearest_region = None
 
-    def compute_intersection(coord, boundary, direction):
-        """Helper to compute intersection distance and point."""
-        if direction == 0:  # No movement in this direction
-            return None
-        t = (boundary - coord) / direction  # Distance to boundary
-        if t <= 0:  # Only consider forward direction
-            return None
-        return t
+    def find_nearest_in_region(region, x, y, z, u, v, w):
+        """
+        Recursive helper to find the nearest boundary in a region.
+        """
+        nonlocal nearest_distance, nearest_point, nearest_region
+        for surface in region.surfaces:
+            if isinstance(surface, Region):
+                # Recursively check nested regions
+                find_nearest_in_region(surface, x, y, z, u, v, w)
+            else:
+                # Compute the distance to the surface
+                distance = surface.nearest_surface_method(x, y, z, u, v, w)
+                if distance is not None and distance < nearest_distance:
+                    # Compute the potential intersection point
+                    point = (x + distance * u, y + distance * v, z + distance * w)
+                    # Check if the point lies within the region
+                    if region.contains(*point):
+                        nearest_distance = distance
+                        nearest_point = point
+                        nearest_region = region
 
-    for medium in mediums:
-        x_min, x_max = medium.x_bounds
-        y_min, y_max = medium.y_bounds
-        z_min, z_max = medium.z_bounds
+    # Iterate over all regions to find the nearest boundary
+    for region in regions:
+        find_nearest_in_region(region, x, y, z, u, v, w)
 
-        # Check intersections with all 6 planes of the medium
-        intersections = []
-
-        # X boundaries
-        if u != 0:
-            t_x_min = compute_intersection(x, x_min, u)
-            t_x_max = compute_intersection(x, x_max, u)
-            if t_x_min:
-                intersections.append((t_x_min, (x_min, y + t_x_min * v, z + t_x_min * w), medium))
-            if t_x_max:
-                intersections.append((t_x_max, (x_max, y + t_x_max * v, z + t_x_max * w), medium))
-
-        # Y boundaries
-        if v != 0:
-            t_y_min = compute_intersection(y, y_min, v)
-            t_y_max = compute_intersection(y, y_max, v)
-            if t_y_min:
-                intersections.append((t_y_min, (x + t_y_min * u, y_min, z + t_y_min * w), medium))
-            if t_y_max:
-                intersections.append((t_y_max, (x + t_y_max * u, y_max, z + t_y_max * w), medium))
-
-        # Z boundaries
-        if w != 0:
-            t_z_min = compute_intersection(z, z_min, w)
-            t_z_max = compute_intersection(z, z_max, w)
-            if t_z_min:
-                intersections.append((t_z_min, (x + t_z_min * u, y + t_z_min * v, z_min), medium))
-            if t_z_max:
-                intersections.append((t_z_max, (x + t_z_max * u, y + t_z_max * v, z_max), medium))
-
-        # Filter valid intersections
-        for t, point, medium in intersections:
-            px, py, pz = point
-            # Check if the intersection point is within the medium's bounds
-            if medium.x_bounds[0] <= px <= medium.x_bounds[1] and \
-               medium.y_bounds[0] <= py <= medium.y_bounds[1] and \
-               medium.z_bounds[0] <= pz <= medium.z_bounds[1]:
-                # Check if this is the nearest valid intersection
-                if t < nearest_distance or (t == nearest_distance and medium.priority > (nearest_medium.priority if nearest_medium else -1)):
-                    nearest_distance = t
-                    nearest_point = point
-                    nearest_medium = medium
-
-    return nearest_point, nearest_medium, nearest_distance
+    if nearest_point:
+        # Apply a small offset in the direction to ensure crossing the boundary
+        offset_point = (
+            nearest_point[0] + epsilon * u,
+            nearest_point[1] + epsilon * v,
+            nearest_point[2] + epsilon * w
+        )
+        # Update state
+        state.update({"x": offset_point[0], "y": offset_point[1], "z": offset_point[2]})
+    return nearest_point, nearest_region, nearest_distance
 
 
 def calculate_void_si_max(mediums):
