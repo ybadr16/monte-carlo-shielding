@@ -13,16 +13,23 @@ class Surface:
         """
         raise NotImplementedError("Subclasses must implement this method.")
 
-
 class Region:
-    def __init__(self, surfaces=None, operation="intersection"):
+    def __init__(self, surfaces=None, operation="intersection", name=None, priority=0, is_void=False, element=None):
         """
         Create a region combining surfaces using boolean operations.
         :param surfaces: List of surfaces defining the region.
         :param operation: Boolean operation ('intersection', 'union', 'complement').
+        :param name: Name of the region.
+        :param priority: Priority of the region (higher value means higher priority).
+        :param is_void: Whether the region is a void (no material interaction).
+        :param element: The material element associated with the region.
         """
         self.surfaces = surfaces if surfaces else []
         self.operation = operation
+        self.name = name
+        self.priority = priority
+        self.is_void = is_void
+        self.element = element
 
     def contains(self, x, y, z):
         """
@@ -226,7 +233,7 @@ class Box(Region):
         super().__init__(surfaces=planes, operation="intersection")
 
 
-
+'''
 # Define six planes for a box from (0, 0, 0) to (10, 10, 10)
 planes = [
     Plane(-1, 0, 0, 0),   # x >= 0
@@ -257,3 +264,4 @@ union_region = Region(surfaces=[box_region, sphere], operation="union")
 
 print("Point", point_inside, "is inside the union region:", union_region.contains(*point_inside))
 print("Point", point_outside, "is inside the union region:", union_region.contains(*point_outside))
+'''

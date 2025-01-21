@@ -30,15 +30,15 @@ def count_coordinates_in_boundary(coordinates, x_bounds, y_bounds, z_bounds):
         for x, y, z in coordinates
     )
 
-def calculate_nearest_boundary(state, regions, u, v, w, epsilon=1e-6):
+def calculate_nearest_boundary(state, regions, u, v, w, epsilon=1e-14):
     """
-    Moves the particle to the nearest boundary in a CSG region.
+    Moves the particle to the nearest boundary in a CSG region hierarchy, considering priority.
 
     Args:
         state: Dictionary representing the particle's state (x, y, z, theta, phi).
-        regions: List of CSG regions to analyze.
+        regions: List of regions ordered from most global to most local.
         u, v, w: Direction vector components.
-        epsilon: Small offset to move the particle slightly inside the new region.
+        epsilon: Small number for floating-point comparisons and offset.
 
     Returns:
         nearest_point: Nearest boundary point (x, y, z).
@@ -49,41 +49,50 @@ def calculate_nearest_boundary(state, regions, u, v, w, epsilon=1e-6):
     nearest_distance = float('inf')
     nearest_point = None
     nearest_region = None
+    max_priority = -1  # Initialize to the lowest possible priority value
 
-    def find_nearest_in_region(region, x, y, z, u, v, w):
+    def solve_boundary_equation(surface, x, y, z, u, v, w):
         """
-        Recursive helper to find the nearest boundary in a region.
+        Solve for the distance to the surface boundary: f(x + du, y + dv, z + dw) = 0.
         """
-        nonlocal nearest_distance, nearest_point, nearest_region
+        return surface.nearest_surface_method(x, y, z, u, v, w)
+
+    # Iterate through regions from global to local
+    for region in regions:
         for surface in region.surfaces:
+            # Check if it's a nested region
             if isinstance(surface, Region):
                 # Recursively check nested regions
-                find_nearest_in_region(surface, x, y, z, u, v, w)
+                calculate_nearest_boundary(state, [surface], u, v, w, epsilon)
             else:
                 # Compute the distance to the surface
-                distance = surface.nearest_surface_method(x, y, z, u, v, w)
-                if distance is not None and distance < nearest_distance:
-                    # Compute the potential intersection point
-                    point = (x + distance * u, y + distance * v, z + distance * w)
-                    # Check if the point lies within the region
-                    if region.contains(*point):
-                        nearest_distance = distance
-                        nearest_point = point
-                        nearest_region = region
-
-    # Iterate over all regions to find the nearest boundary
-    for region in regions:
-        find_nearest_in_region(region, x, y, z, u, v, w)
+                distance = solve_boundary_equation(surface, x, y, z, u, v, w)
+                if distance is not None and distance >= 0:
+                    # Handle floating-point equality
+                    if abs(distance - nearest_distance) / max(nearest_distance, epsilon) < epsilon:
+                        # Prefer surfaces from higher priority regions if coincident
+                        continue
+                    if distance < nearest_distance:
+                        # Compute the intersection point
+                        point = (x + distance * u, y + distance * v, z + distance * w)
+                        # Check if the point is within the region
+                        if region.contains(*point):
+                            # If the region has higher priority, select it
+                            if region.priority > max_priority:
+                                nearest_distance = distance
+                                nearest_point = point
+                                nearest_region = region
+                                max_priority = region.priority
 
     if nearest_point:
-        # Apply a small offset in the direction to ensure crossing the boundary
+        # Apply a small offset to move across the boundary
         offset_point = (
             nearest_point[0] + epsilon * u,
             nearest_point[1] + epsilon * v,
             nearest_point[2] + epsilon * w
         )
-        # Update state
         state.update({"x": offset_point[0], "y": offset_point[1], "z": offset_point[2]})
+
     return nearest_point, nearest_region, nearest_distance
 
 

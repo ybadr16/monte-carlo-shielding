@@ -61,14 +61,14 @@ def test_intersection_of_box_and_sphere():
     box_region = Region(surfaces=planes, operation="intersection")
 
     # Define a sphere intersecting with the box
-    sphere = Sphere(x0=5, y0=5, z0=5, radius=5)
+    sphere = Sphere(x0=0, y0=5, z0=0, radius=5)
 
     # Create an intersection of the box and the sphere
     intersection_region = Region(surfaces=[box_region, sphere], operation="intersection")
 
-    state = {"x": 5, "y": 10, "z": 5}
+    state = {"x": 0, "y": 15, "z": 0}
     u, v, w = 0, -1, 0  # Moving towards the region
     point, medium, distance = calculate_nearest_boundary(state, [intersection_region], u, v, w)
     assert pytest.approx(distance, rel=1e-6) == 5  # Distance to the nearest boundary
-    assert pytest.approx(point[1], rel=1e-6) == 5  # Nearest point is within the intersection
+    assert pytest.approx(point[1], rel=1e-6) == 10  # Nearest point is within the intersection
     assert medium == intersection_region
