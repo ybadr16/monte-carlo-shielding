@@ -28,22 +28,21 @@ def main():
     mediums = [
         Region(
             surfaces=[
-                Cylinder(radius=5, x0=0, y0=0, axis="z"),
-                Plane(0, 0, -1, -10),  # z >= -10
+                Cylinder(radius=10, x0=0, y0=0, axis="z"),
+                Plane(0, 0, -1, 10),  # z >= -10 (D=-10, no absolute)
                 Plane(0, 0, 1, 10)     # z <= 10
             ],
             name="Cylinder",
             priority=1,
-            is_void=False,
             element="Pb208"
         ),
         Region(
             surfaces=[
-                Plane(-1, 0, 0, -20),  # x >= -20
+                Plane(-1, 0, 0, 20),  # x >= -20
                 Plane(1, 0, 0, 20),    # x <= 20
-                Plane(0, -1, 0, -40),  # y >= -40
+                Plane(0, -1, 0, 40),  # y >= -40
                 Plane(0, 1, 0, 40),    # y <= 40
-                Plane(0, 0, -1, -20),  # z >= -20
+                Plane(0, 0, -1, 20),  # z >= -20
                 Plane(0, 0, 1, 20)     # z <= 20
             ],
             name="Void",
@@ -55,7 +54,7 @@ def main():
 
 
     # Simulate particles
-    num_particles = 1000
+    num_particles = 100
 
     rngs = [RNGHandler(seed=12345 + i) for i in range(num_particles)]
 
@@ -65,7 +64,7 @@ def main():
     # Initialize particle queue
     particle_states = [
         {
-            "x": -10.5, "y": 0.0, "z": 0.0,
+            "x": -4.5, "y": 0.0, "z": 0.0,
             "theta": rng.uniform(0, np.pi),
             "phi": rng.uniform(0, 2 * np.pi),
             "has_interacted": False,

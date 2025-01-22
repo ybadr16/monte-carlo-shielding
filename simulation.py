@@ -71,23 +71,38 @@ def simulate_particle(state, reader, mediums, A, N, sampler, region_bounds=None,
         current_medium = None
         max_priority = -float('inf')
         for medium in mediums:
-            if medium.contains(state["x"], state["y"], state["z"]) and medium.priority > max_priority:
+            point_check = (state["x"], state["y"], state["z"])
+            if medium.contains(*point_check) and medium.priority > max_priority:
                 current_medium = medium
+                #print("This is inside medium check")
+                print(medium.name)
                 max_priority = medium.priority
+                #print(max_priority)
 
+        #print(medium.name, (state["x"], state["y"], state["z"]))
         if current_medium is None:
+
+            #print("This is printing")
+
             # Particle is outside all defined mediums, escapes
             return "escaped", absorbed_coordinates, fission_coordinates, None, state["energy"], region_count, trajectory
 
         nearest_point, nearest_medium, nearest_distance = calculate_nearest_boundary(state, mediums, u, v, w)
 
+        if nearest_point is None:
+            return "escaped", absorbed_coordinates, fission_coordinates, None, state["energy"], region_count, trajectory
+
+
         if current_medium.is_void:
-            state["x"], state["y"], state["z"] = nearest_point
-            # Apply a small offset in the direction of travel
-            state["x"] += epsilon * u
-            state["y"] += epsilon * v
-            state["z"] += epsilon * w
+            # Ensure nearest_point is valid before updating state
+            if nearest_point is not None:
+                state["x"], state["y"], state["z"] = nearest_point
+                state["x"] += epsilon * u
+                state["y"] += epsilon * v
+                state["z"] += epsilon * w
             continue
+
+        #print("This is not printing")
 
         # Get cross-sections for the current medium
         sigma_s, sigma_a, sigma_f, Sigma_t = reader.get_cross_sections(

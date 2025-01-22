@@ -32,25 +32,27 @@ class Region:
         self.element = element
 
     def contains(self, x, y, z):
-        """
-        Check if a point is within the region based on the boolean operation.
-        :return: True if the point is inside the region, False otherwise.
-        """
         evaluations = []
         for surface in self.surfaces:
             if isinstance(surface, Region):
-                # Recursively check nested regions
                 evaluations.append(surface.contains(x, y, z))
             else:
-                evaluations.append(surface.evaluate(x, y, z) <= 0)
+                eval_result = surface.evaluate(x, y, z) <= 0
+                evaluations.append(eval_result)
 
         if self.operation == "intersection":
             return all(evaluations)
         elif self.operation == "union":
             return any(evaluations)
         elif self.operation == "complement":
-            # Complement of the first surface
             return not evaluations[0]
+        elif self.operation == "difference":
+            # A - B = A ∩ ¬B
+            if len(self.surfaces) != 2:
+                raise ValueError("Difference operation requires exactly two surfaces")
+            a = evaluations[0]
+            b = evaluations[1]
+            return a and not b
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 
@@ -61,13 +63,6 @@ class Region:
 
 class Plane(Surface):
     def __init__(self, A, B, C, D):
-        """
-        Initialize a generic plane Ax + By + Cz = D.
-        :param A: Coefficient for x
-        :param B: Coefficient for y
-        :param C: Coefficient for z
-        :param D: Offset from the origin
-        """
         super().__init__()
         self.A = A
         self.B = B
@@ -75,7 +70,9 @@ class Plane(Surface):
         self.D = D
 
     def evaluate(self, x, y, z):
+        #print(self.A * x + self.B * y + self.C * z - self.D)
         return self.A * x + self.B * y + self.C * z - self.D
+
 
     def nearest_surface_method(self, x, y, z, u, v, w):
         """
@@ -91,6 +88,9 @@ class Plane(Surface):
             return None  # Parallel to the plane
 
         return numerator / denominator
+
+    def normal(self, x, y, z):
+        return (self.A, self.B, self.C)
 
 class Sphere(Surface):
     def __init__(self, x0, y0, z0, radius):
@@ -137,6 +137,8 @@ class Sphere(Surface):
                 return d2
             else:
                 return None  # Both distances are negative
+    def normal(self, x, y, z):
+        return (x - self.x0, y - self.y0, z - self.z0)
 
 class Cylinder(Surface):
     def __init__(self, radius, x0 = None, y0 = None, z0 = None, axis="z"):
@@ -207,6 +209,14 @@ class Cylinder(Surface):
             else:
                 return None  # Both distances are negative
 
+        def normal(self, x, y, z):
+            if self.axis == 'z':
+                return (x - self.x0, y - self.y0, 0)
+            elif self.axis == 'x':
+                return (0, y - self.y0, z - self.z0)
+            elif self.axis == 'y':
+                return (x - self.x0, 0, z - self.z0)
+
 
 
 class Box(Region):
@@ -233,16 +243,17 @@ class Box(Region):
         super().__init__(surfaces=planes, operation="intersection")
 
 
-'''
 # Define six planes for a box from (0, 0, 0) to (10, 10, 10)
-planes = [
-    Plane(-1, 0, 0, 0),   # x >= 0
-    Plane(1, 0, 0, 10),   # x <= 10
-    Plane(0, -1, 0, 0),   # y >= 0
-    Plane(0, 1, 0, 10),   # y <= 10
-    Plane(0, 0, -1, 0),   # z >= 0
-    Plane(0, 0, 1, 10),   # z <= 10
-]
+planes=[
+        Plane(-1, 0, 0, -20),  # x >= -20
+        Plane(1, 0, 0, 20),    # x <= 20
+        Plane(0, -1, 0, -40),  # y >= -40
+        Plane(0, 1, 0, 40),    # y <= 40
+        Plane(0, 0, -1, -20),  # z >= -20
+        Plane(0, 0, 1, 20)     # z <= 20
+    ]
+
+
 
 
 # Combine planes into a box region
@@ -250,18 +261,18 @@ box_region = Region(surfaces=planes, operation="intersection")
 
 # Check if points are inside the box
 point_inside = (5, 5, 5)
-point_outside = (12, 0, 0)
+point_outside = (40, 0, 0)
 
-print("Point", point_inside, "is inside the box:", box_region.contains(*point_inside))
-print("Point", point_outside, "is inside the box:", box_region.contains(*point_outside))
+#print("Point", point_inside, "is inside the box:", box_region.contains(*point_inside))
+#print("Point", point_outside, "is inside the box:", box_region.contains(*point_outside))
 
 
 # Define a sphere
-sphere = Sphere(10, 0, 0, 3)  # Sphere centered at (5, 5, 5) with radius 3
+#sphere = Sphere(10, 0, 0, 3)  # Sphere centered at (5, 5, 5) with radius 3
 
 # Create a union of the box and the sphere
-union_region = Region(surfaces=[box_region, sphere], operation="union")
+#union_region = Region(surfaces=[box_region, sphere], operation="union")
 
-print("Point", point_inside, "is inside the union region:", union_region.contains(*point_inside))
-print("Point", point_outside, "is inside the union region:", union_region.contains(*point_outside))
-'''
+#print("Point", point_inside, "is inside the union region:", union_region.contains(*point_inside))
+#print("Point", point_outside, "is inside the union region:", union_region.contains(*point_outside))
+
