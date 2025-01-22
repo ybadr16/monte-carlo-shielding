@@ -85,20 +85,9 @@ def calculate_nearest_boundary(state, regions, u, v, w, epsilon=1e-10):
                         max_priority = region.priority
 
     if nearest_point is not None and nearest_region is not None and nearest_surface is not None:
-        # Compute surface normal at intersection point
-        nx, ny, nz = nearest_surface.normal(*nearest_point)
-        norm_length = (nx**2 + ny**2 + nz**2) ** 0.5
-        if norm_length > 0:
-            nx /= norm_length
-            ny /= norm_length
-            nz /= norm_length
-        else:
-            nx, ny, nz = 0, 0, 0  # Fallback if normal is zero
-
-        # Adjust position along the normal into the new region
-        new_x = nearest_point[0] - epsilon * nx
-        new_y = nearest_point[1] - epsilon * ny
-        new_z = nearest_point[2] - epsilon * nz
+        new_x = nearest_point[0]
+        new_y = nearest_point[1]
+        new_z = nearest_point[2]
 
         # Find the new region
         for region in regions:

@@ -90,7 +90,10 @@ class Plane(Surface):
         return numerator / denominator
 
     def normal(self, x, y, z):
-        return (self.A, self.B, self.C)
+        mag = (self.A**2 + self.B**2 + self.C**2) ** 0.5
+        if mag == 0:
+            return (0.0, 0.0, 0.0)  # Handle invalid plane
+        return (self.A / mag, self.B / mag, self.C / mag)
 
 class Sphere(Surface):
     def __init__(self, x0, y0, z0, radius):
@@ -138,7 +141,13 @@ class Sphere(Surface):
             else:
                 return None  # Both distances are negative
     def normal(self, x, y, z):
-        return (x - self.x0, y - self.y0, z - self.z0)
+        dx = x - self.x0
+        dy = y - self.y0
+        dz = z - self.z0
+        mag = (dx**2 + dy**2 + dz**2) ** 0.5
+        if mag == 0:
+            return (0.0, 0.0, 0.0)  # Handle center point
+        return (dx / mag, dy / mag, dz / mag)
 
 class Cylinder(Surface):
     def __init__(self, radius, x0 = None, y0 = None, z0 = None, axis="z"):
@@ -211,11 +220,26 @@ class Cylinder(Surface):
 
         def normal(self, x, y, z):
             if self.axis == 'z':
-                return (x - self.x0, y - self.y0, 0)
+                dx = x - self.x0
+                dy = y - self.y0
+                mag = (dx**2 + dy**2)**0.5
+                if mag == 0:
+                    return (0.0, 0.0, 0.0)  # Handle edge case
+                return (dx/mag, dy/mag, 0.0)
             elif self.axis == 'x':
-                return (0, y - self.y0, z - self.z0)
+                dy = y - self.y0
+                dz = z - self.z0
+                mag = (dy**2 + dz**2)**0.5
+                if mag == 0:
+                    return (0.0, 0.0, 0.0)
+                return (0.0, dy/mag, dz/mag)
             elif self.axis == 'y':
-                return (x - self.x0, 0, z - self.z0)
+                dx = x - self.x0
+                dz = z - self.z0
+                mag = (dx**2 + dz**2)**0.5
+                if mag == 0:
+                    return (0.0, 0.0, 0.0)
+                return (dx/mag, 0.0, dz/mag)
 
 
 
@@ -240,8 +264,8 @@ class Box(Region):
             Plane(0, 0, 1, z_max),  # z <= z_max
         ]
         # Initialize the Region with these planes and the intersection operation
-        super().__init__(surfaces=planes, operation="intersection")
 
+        super().__init__(surfaces=planes, operation="intersection")
 
 # Define six planes for a box from (0, 0, 0) to (10, 10, 10)
 planes=[
