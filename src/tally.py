@@ -1,5 +1,5 @@
 # tally.py
-from geometry import count_coordinates_in_boundary
+from .geometry import count_coordinates_in_boundary
 
 class Tally:
     def __init__(self):

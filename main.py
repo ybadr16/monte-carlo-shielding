@@ -1,16 +1,17 @@
 # main.py
-from collections import deque
-from cross_section_read import CrossSectionReader
-from vt_calc import VelocitySampler
-from simulation import simulate_single_particle
-from material import Material
-from medium import Medium
+from src.cross_section_read import CrossSectionReader
+from src.vt_calc import VelocitySampler
+from src.simulation import simulate_single_particle
+from src.material import Material
+from src.medium import Region, Plane, Cylinder
+from src.tally import Tally
+from src.random_number_generator import RNGHandler
 from multiprocessing import Pool
-from tally import Tally
-from random_number_generator import RNGHandler
 import json
 import time
 import numpy as np
+from collections import deque
+
 
 def main():
     # Initialize cross-section reader and sampler
@@ -25,15 +26,36 @@ def main():
     mass_in_kg = lead.kg_mass
     sampler = VelocitySampler(mass=mass_in_kg)  # mass for Pb
 
-    # Define mediums
     mediums = [
-        Medium(name="Lead Shield", x_bounds=(-10, 10), y_bounds=(-20, 20), z_bounds=(-10, 10), element="Pb208", priority=1),
-        Medium(name="Void", x_bounds=(-20, 20), y_bounds=(-40, 40), z_bounds=(-20, 20), is_void=True, priority=0)
+        Region(
+            surfaces=[
+                Cylinder("z", 10, (0, 0, 0)),
+                Plane(0, 0, -1, 10),  # z >= -10 (D=-10, no absolute)
+                Plane(0, 0, 1, 10)     # z <= 10
+            ],
+            name="Cylinder",
+            priority=1,
+            element="Pb208"
+        ),
+        Region(
+            surfaces=[
+                Plane(-1, 0, 0, 20),  # x >= -20
+                Plane(1, 0, 0, 20),    # x <= 20
+                Plane(0, -1, 0, 40),  # y >= -40
+                Plane(0, 1, 0, 40),    # y <= 40
+                Plane(0, 0, -1, 20),  # z >= -20
+                Plane(0, 0, 1, 20)     # z <= 20
+            ],
+            name="Void",
+            priority=0,
+            is_void=True
+        )
     ]
 
 
+
     # Simulate particles
-    num_particles = 1000
+    num_particles = 100
 
     rngs = [RNGHandler(seed=12345 + i) for i in range(num_particles)]
 

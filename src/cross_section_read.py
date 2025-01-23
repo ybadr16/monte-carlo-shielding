@@ -1,4 +1,4 @@
-from physics import calculate_E_cm_prime
+from .physics import calculate_E_cm_prime
 import os
 import h5py
 import numpy as np
