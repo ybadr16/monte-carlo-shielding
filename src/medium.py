@@ -99,7 +99,6 @@ class Cylinder:
             return (y - self.y0) ** 2 + (z - self.z0) ** 2 - self.radius ** 2
         elif self.axis == "y":
             return (x - self.x0) ** 2 + (z - self.z0) ** 2 - self.radius ** 2
-
     def nearest_surface_method(self, x, y, z, u, v, w):
         if self.axis == "z":
             x_bar = x - self.x0
@@ -107,36 +106,52 @@ class Cylinder:
             a = u**2 + v**2
             k = x_bar * u + y_bar * v
             c = x_bar**2 + y_bar**2 - self.radius**2
+            radial_u, radial_v = x_bar, y_bar  # Radial vector components
+            dir_u, dir_v = u, v                # Direction components
         elif self.axis == "x":
             y_bar = y - self.y0
             z_bar = z - self.z0
             a = v**2 + w**2
             k = y_bar * v + z_bar * w
             c = y_bar**2 + z_bar**2 - self.radius**2
+            radial_u, radial_v = y_bar, z_bar
+            dir_u, dir_v = v, w
         elif self.axis == "y":
             x_bar = x - self.x0
             z_bar = z - self.z0
             a = u**2 + w**2
             k = x_bar * u + z_bar * w
             c = x_bar**2 + z_bar**2 - self.radius**2
+            radial_u, radial_v = x_bar, z_bar
+            dir_u, dir_v = u, w
 
         if a == 0:
-            return None
+            return None  # Direction parallel to cylinder axis
 
         discriminant = k**2 - a * c
         if discriminant < 0:
-            return None
+            return None  # No real intersection
 
-        sqrt_d = np.sqrt(discriminant)
+        sqrt_d = math.sqrt(discriminant)
         d1 = (-k - sqrt_d) / a
         d2 = (-k + sqrt_d) / a
 
         if c < 0:
+            # Inside cylinder: return exit point (max root)
             return max(d1, d2)
+        elif c == 0:
+            # On the surface: check direction relative to radial vector
+            dot = radial_u * dir_u + radial_v * dir_v
+            if dot < 0:
+                # Moving inward: return exit point (d2 if valid)
+                return d2 if d2 >= 0 else None
+            else:
+                # Moving outward/tangentially: no future intersection
+                return None
         else:
-            valid = [d for d in [d1, d2] if d >= 0]
+            # Outside: return first valid intersection (min root)
+            valid = [d for d in (d1, d2) if d >= 0]
             return min(valid) if valid else None
-
         def normal(self, x, y, z):
             if self.axis == 'z':
                 dx = x - self.x0
