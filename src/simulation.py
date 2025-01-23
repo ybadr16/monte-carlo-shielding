@@ -1,6 +1,6 @@
 # simulation.py
-from geometry import calculate_nearest_boundary, calculate_void_si_max
-from physics import elastic_scattering, sample_new_direction_cosines
+from .geometry import calculate_nearest_boundary, calculate_void_si_max
+from .physics import elastic_scattering, sample_new_direction_cosines
 import numpy as np
 
 def simulate_single_particle(args):

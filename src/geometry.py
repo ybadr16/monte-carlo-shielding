@@ -1,6 +1,6 @@
 # geometry.py
 import numpy as np
-from medium import Region
+from .medium import Region
 
 
 def calculate_direction_cosines(x, y, z, x_prev, y_prev, z_prev):

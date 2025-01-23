@@ -1,16 +1,17 @@
 # main.py
-from collections import deque
-from cross_section_read import CrossSectionReader
-from vt_calc import VelocitySampler
-from simulation import simulate_single_particle
-from material import Material
-from medium import Region, Plane, Cylinder
+from src.cross_section_read import CrossSectionReader
+from src.vt_calc import VelocitySampler
+from src.simulation import simulate_single_particle
+from src.material import Material
+from src.medium import Region, Plane, Cylinder
+from src.tally import Tally
+from src.random_number_generator import RNGHandler
 from multiprocessing import Pool
-from tally import Tally
-from random_number_generator import RNGHandler
 import json
 import time
 import numpy as np
+from collections import deque
+
 
 def main():
     # Initialize cross-section reader and sampler
@@ -28,7 +29,7 @@ def main():
     mediums = [
         Region(
             surfaces=[
-                Cylinder(radius=10, x0=0, y0=0, axis="z"),
+                Cylinder("z", 10, (0, 0, 0)),
                 Plane(0, 0, -1, 10),  # z >= -10 (D=-10, no absolute)
                 Plane(0, 0, 1, 10)     # z <= 10
             ],
