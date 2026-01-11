@@ -220,12 +220,55 @@ def sample_new_direction_cosines(u, v, w, mu_lab, rng):
 def get_nuclear_temperature(energy, A):
     """
     Calculates Nuclear Temperature (T) using the Fermi Gas Model.
-    Approximation: a = A / 8.0 (Level density parameter)
-    """
-    if energy <= 0: return 1.0  # Safety floor
 
-    # Level density parameter
+    Parameters:
+        energy: Available excitation energy in eV
+        A: Mass number of the target nucleus
+
+    Returns:
+        Nuclear temperature in eV
+
+    Formula: T = sqrt(U/a) where a = A/8 MeV^-1
+    """
+    if energy <= 0:
+        return 1e3  # Safety floor: 1 MeV
+
+    # Level density parameter (MeV^-1)
     a = A / 8.0
 
-    # T = sqrt(U/a) where U is excitation energy ~ incident energy
-    return np.sqrt(energy / a)
+    # Convert energy to MeV for the formula
+    energy_MeV = energy / 1e6
+
+    # Calculate temperature in MeV
+    T_MeV = np.sqrt(energy_MeV / a)
+
+    # Convert back to eV and return
+    return T_MeV * 1e6
+
+def sample_forward_biased_mu(E_in, A, rng):
+    """
+    Sample mu with physics-based forward bias for high-energy (n,xn) reactions.
+    """
+    # For light nuclei (Be, C), less forward peaked than heavy nuclei
+    # For heavy nuclei (Pb), more forward peaked
+
+    log_E = np.log10(max(E_in, 1.0))
+
+    # Base forward bias scaling with energy
+    if log_E > 6:  # > 1 MeV
+        base_bias = 0.1 + 0.4 * (log_E - 6) / 1.5  # Ramps up to ~0.5 at 14 MeV
+    else:
+        base_bias = 0.0
+
+    # A-dependence: heavier = more forward peaked
+    a_factor = 1 - np.exp(-A / 50.0)  # Saturates for heavy nuclei
+
+    forward_bias = min(0.6, base_bias * a_factor)
+
+    # Sample from P(mu) ~ 1 + 3*f*mu using rejection
+    max_p = 0.5 * (1 + 3 * abs(forward_bias))
+    while True:
+        mu = 2 * rng.random() - 1
+        prob = 0.5 * (1 + 3 * forward_bias * mu)
+        if rng.random() * max_p < prob:
+            return mu

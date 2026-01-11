@@ -1,25 +1,27 @@
 from .geometry import calculate_nearest_boundary, calculate_void_si_max
-# Updated imports to include get_nuclear_temperature
 from .physics import (
     elastic_scattering,
     inelastic_scattering,
     sample_new_direction_cosines,
     sample_maxwellian,
-    get_nuclear_temperature
+    get_nuclear_temperature,
+    get_vectors_and_vcm,
+    sample_forward_biased_mu
 )
 import numpy as np
+
+# Constants needed for inline calc
+m_n = 1.674927471e-27
+eV_to_J = 1.60217663e-19
 
 def simulate_single_particle(args):
     """
     Simulates a single source particle and all its descendants (Bank/Stack method).
     """
-    # Unpack settings
     initial_state, reader, mediums, A, N, sampler, region_bounds, track_coordinates, rng, settings = args
 
-    # --- THE PARTICLE BANK ---
     bank = [initial_state.copy()]
 
-    # --- TALLY ACCUMULATORS ---
     total_absorbed_weight = 0.0
     absorbed_events = []
     fission_events = 0
@@ -28,7 +30,6 @@ def simulate_single_particle(args):
     region_detections = 0
     full_trajectory = []
 
-    # --- PROCESS BANK UNTIL EMPTY ---
     while bank:
         current_state = bank.pop()
 
@@ -120,7 +121,6 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
             continue
 
         # --- 6. CROSS SECTIONS ---
-        # FIX: Passing 'A' correctly here
         sigma_s, sigma_in, sigma_a, sigma_f, Sigma_t = reader.get_cross_sections(
             current_medium.element, state["energy"], sampler, N, A
         )
@@ -215,107 +215,141 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                         selected_mt = mt
                         break
 
-                # --- TABULATED CONTINUUM / MULTIPLICATION ---
-                # MT 91 (Continuum), 16 (n,2n), 17 (n,3n)
+                # --- TABULATED CONTINUUM / MULTIPLICATION (Law 61 & Law 4) ---
                 if selected_mt in [16, 17, 91]:
-                    # 1. Try Reader
-                    E_out = reader.get_secondary_energy(current_medium.element, selected_mt, state["energy"], rng)
+                    E_in_snapshot = state["energy"]
 
-                    # 2. Fallback (Fermi Gas) if missing
-                    if E_out is None:
-                        E_avail = max(1.0, state["energy"] - selected_q)
+                    # Calculate available energy budget
+                    E_avail = max(1.0, E_in_snapshot - selected_q)
+
+                    # ---------------------------------------------------------
+                    # [PHYSICS FIX] PARENT NEUTRON
+                    # ---------------------------------------------------------
+                    E_prime = 0.0
+                    mu_lab = 0.0
+                    valid_sample = False
+
+                    # Attempt Rejection Sampling to satisfy Energy Conservation
+                    for _ in range(10):
+                        # A. Try Correlated (Law 61) - e.g. Be9, Fe56
+                        E_try, mu_try, success = reader.get_secondary_correlated_sample(
+                            current_medium.element, selected_mt, E_in_snapshot, rng
+                        )
+
+                        # B. Try Uncorrelated (Law 4) - e.g. Pb208
+                        # If Law 61 failed (success=False), check if Law 4 data exists
+                        if not success:
+                            E_uncorr = reader.get_secondary_energy(current_medium.element, selected_mt, E_in_snapshot, rng)
+                            if E_uncorr is not None:
+                                E_try = E_uncorr
+                                mu_try = None # Law 4 usually implies isotropic or separate angular file
+                                success = True
+
+                        if success:
+                            if E_try <= E_avail:
+                                E_prime = E_try
+                                mu_lab = mu_try if mu_try is not None else (2 * rng.random() - 1)
+                                valid_sample = True
+                                break
+
+                    # C. Fallback: Evaporation Model
+                    if not valid_sample:
                         T_nuc = get_nuclear_temperature(E_avail, A)
-                        E_out = sample_maxwellian(T_nuc, rng)
-
-                    if selected_mt == 91:
-                        E_prime = E_out
+                        E_prime = sample_maxwellian(T_nuc, rng)
+                        E_prime = min(E_prime, E_avail) # Hard clamp is acceptable in fallback
                         mu_lab = 2 * rng.random() - 1
 
-                    elif selected_mt == 16:
-                        E1 = E_out
-                        # For child, read again or use fallback
-                        E2 = reader.get_secondary_energy(current_medium.element, 16, state["energy"], rng)
-                        if E2 is None:
-                            E_avail = max(1.0, state["energy"] - selected_q)
-                            T_nuc = get_nuclear_temperature(E_avail, A)
-                            E2 = sample_maxwellian(T_nuc, rng)
+                    # Update Parent State
+                    u, v, w, state["phi"] = sample_new_direction_cosines(u, v, w, mu_lab, rng)
+                    state["theta"] = np.arccos(w)
+                    state["energy"] = max(1e-5, E_prime)
 
-                        # Conserve
-                        E_avail = max(1.0, state["energy"] - selected_q)
-                        if (E1 + E2) > E_avail:
-                            scale = E_avail / (E1 + E2)
-                            E1 *= scale; E2 *= scale
+                    # ---------------------------------------------------------
+                    # [PHYSICS FIX] CHILDREN NEUTRONS
+                    # ---------------------------------------------------------
 
-                        E_prime = E1
-                        mu_lab = 2 * rng.random() - 1
+                    if selected_mt == 16:  # (n,2n) -> 1 Child
+                        E_remaining = max(1e-5, E_avail - E_prime)
 
-                        # Child
+                        child_E = 0.0
+                        child_valid = False
+
+                        # Try to sample child from real distribution
+                        for _ in range(10):
+                            # Try Law 61
+                            E_c, mu_c, succ_c = reader.get_secondary_correlated_sample(
+                                current_medium.element, selected_mt, E_in_snapshot, rng
+                            )
+                            # Try Law 4
+                            if not succ_c:
+                                E_c_uncorr = reader.get_secondary_energy(current_medium.element, selected_mt, E_in_snapshot, rng)
+                                if E_c_uncorr is not None:
+                                    E_c = E_c_uncorr
+                                    succ_c = True
+
+                            if succ_c and E_c <= E_remaining:
+                                child_E = E_c
+                                child_valid = True
+                                break
+
+                        # Fallback Child
+                        if not child_valid:
+                            T_nuc = get_nuclear_temperature(E_remaining, A)
+                            child_E = sample_maxwellian(T_nuc, rng)
+                            child_E = min(child_E, E_remaining)
+
                         child = state.copy()
-                        child["energy"] = E2
+                        child["energy"] = max(1e-5, child_E)
                         child["has_interacted"] = True
                         child["was_in_region"] = True
-                        # Randomize child direction
-                        u2,v2,w2 = 2*rng.random()-1, 2*rng.random()-1, 2*rng.random()-1
-                        norm = np.sqrt(u2**2+v2**2+w2**2)
-                        child["theta"] = np.arccos(w2/norm)
-                        child["phi"] = np.arctan2(v2, u2)
+
+                        # New direction
+                        mu_c = 2 * rng.random() - 1
+                        uc, vc, wc, child["phi"] = sample_new_direction_cosines(u, v, w, mu_c, rng)
+                        child["theta"] = np.arccos(wc)
                         children.append(child)
 
-                    elif selected_mt == 17:
-                        E1 = E_out
-                        # Simplified for n,3n robustness
-                        E2 = E1; E3 = E1
-                        E_avail = max(1.0, state["energy"] - selected_q)
-                        if (E1+E2+E3) > E_avail:
-                            scale = E_avail/(E1+E2+E3)
-                            E1*=scale; E2*=scale; E3*=scale
+                    elif selected_mt == 17:  # (n,3n) -> 2 Children
+                        E_remaining = max(1e-5, E_avail - E_prime)
 
-                        E_prime = E1
-                        mu_lab = 2 * rng.random() - 1
+                        # Simple valid approximation: Split remaining budget 50/50
+                        E_c1 = E_remaining * 0.5
+                        E_c2 = E_remaining * 0.5
 
-                        for e_c in [E2, E3]:
+                        for e_c in [E_c1, E_c2]:
                             child = state.copy()
-                            child["energy"] = e_c
+                            child["energy"] = max(1e-5, e_c)
                             child["has_interacted"] = True
                             child["was_in_region"] = True
-                            u2,v2,w2 = 2*rng.random()-1, 2*rng.random()-1, 2*rng.random()-1
-                            norm = np.sqrt(u2**2+v2**2+w2**2)
-                            child["theta"] = np.arccos(w2/norm)
-                            child["phi"] = np.arctan2(v2, u2)
+                            mu_c = 2 * rng.random() - 1
+                            uc, vc, wc, child["phi"] = sample_new_direction_cosines(u, v, w, mu_c, rng)
+                            child["theta"] = np.arccos(wc)
                             children.append(child)
+
+                    continue
 
                 else:
                     # Discrete Levels (51-90)
                     E_prime, mu_cm, mu_lab = inelastic_scattering(state["energy"], A, selected_q, sampler, rng)
+                    u, v, w, state["phi"] = sample_new_direction_cosines(u, v, w, mu_lab, rng)
+                    state["theta"] = np.arccos(w)
+                    state["energy"] = E_prime
 
         else:
             # --- ELASTIC SCATTERING ---
-            from .physics import get_vectors_and_vcm
-            vec_vn, vec_vcm, vec_Vn = get_vectors_and_vcm(state["energy"], A, sampler, rng)
-            Vn_speed = np.linalg.norm(vec_Vn)
-
             mu_cm = reader.get_elastic_mu(current_medium.element, state["energy"], rng)
 
-            phi_cm = 2 * np.pi * rng.random()
-            sin_cm = np.sqrt(max(0.0, 1.0 - mu_cm**2))
+            A_sq = A**2
+            term = A_sq + 1 + 2*A*mu_cm
+            E_prime = state["energy"] * term / ((A + 1)**2)
 
-            u_prime = sin_cm * np.cos(phi_cm)
-            v_prime = sin_cm * np.sin(phi_cm)
-            w_prime = mu_cm
-
-            vec_Vn_prime = Vn_speed * np.array([u_prime, v_prime, w_prime])
-            vec_vn_prime = vec_Vn_prime + vec_vcm
-            vn_prime_speed_sq = np.dot(vec_vn_prime, vec_vn_prime)
-            E_prime = 0.5 * 1.674927471e-27 * vn_prime_speed_sq / 1.60217663e-19
-
-            vn_prime_speed = np.sqrt(vn_prime_speed_sq)
-            if vn_prime_speed > 0:
-                mu_lab = vec_vn_prime[2] / vn_prime_speed
-            else:
-                mu_lab = 1.0
+            numerator = 1 + A * mu_cm
+            denominator = np.sqrt(term)
+            mu_lab = numerator / denominator
 
             E_prime = max(1e-5, E_prime)
+            mu_lab = max(-1.0, min(1.0, mu_lab))
 
-        u, v, w, state["phi"] = sample_new_direction_cosines(u, v, w, mu_lab, rng)
-        state["theta"] = np.arccos(w)
-        state["energy"] = E_prime
+            u, v, w, state["phi"] = sample_new_direction_cosines(u, v, w, mu_lab, rng)
+            state["theta"] = np.arccos(w)
+            state["energy"] = E_prime
