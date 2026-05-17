@@ -269,34 +269,25 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                     # ---------------------------------------------------------
 
                     if selected_mt == 16:  # (n,2n) -> 1 Child
-                        E_remaining = max(1e-5, E_avail - E_prime)
-
-                        child_E = 0.0
-                        child_valid = False
-
-                        # Try to sample child from real distribution
-                        for _ in range(10):
-                            # Try Law 61
-                            E_c, mu_c, succ_c = reader.get_secondary_correlated_sample(
+                        # Sample child independently from the same ENDF distribution as the
+                        # parent — no E_c <= E_remaining constraint.  The original constraint
+                        # caused systematic rejection when E_remaining was small (parent took
+                        # a large share), forcing the Maxwellian fallback and a soft spectrum.
+                        # OpenMC samples both neutrons from the distribution independently;
+                        # per-event energy conservation is not enforced.
+                        child_E, _, succ_c = reader.get_secondary_correlated_sample(
+                            current_medium.element, selected_mt, E_in_snapshot, rng
+                        )
+                        if not succ_c:
+                            child_E_uncorr = reader.get_secondary_energy(
                                 current_medium.element, selected_mt, E_in_snapshot, rng
                             )
-                            # Try Law 4
-                            if not succ_c:
-                                E_c_uncorr = reader.get_secondary_energy(current_medium.element, selected_mt, E_in_snapshot, rng)
-                                if E_c_uncorr is not None:
-                                    E_c = E_c_uncorr
-                                    succ_c = True
-
-                            if succ_c and E_c <= E_remaining:
-                                child_E = E_c
-                                child_valid = True
-                                break
-
-                        # Fallback Child
-                        if not child_valid:
-                            T_nuc = get_nuclear_temperature(E_remaining, A)
+                            if child_E_uncorr is not None:
+                                child_E = child_E_uncorr
+                                succ_c = True
+                        if not succ_c:
+                            T_nuc = get_nuclear_temperature(E_avail, A)
                             child_E = sample_maxwellian(T_nuc, rng)
-                            child_E = min(child_E, E_remaining)
 
                         child = state.copy()
                         child["energy"] = max(1e-5, child_E)
