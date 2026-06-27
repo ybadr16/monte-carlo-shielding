@@ -31,6 +31,7 @@ user-defined materials and geometries, driven by ENDF/B-VIII nuclear data.
 ✅ Constructive-solid-geometry: planes, spheres, cylinders, boxes, nested regions, voids, priorities
 ✅ Single-isotope **or multi-isotope material mixtures** per region (isotope sampled per collision)
 ✅ Analog **and** survival-biased (implicit-capture + roulette) transport modes
+✅ **k-eigenvalue (criticality)** via a fission-source power iteration (ν + Watt χ)
 ✅ Parallel particle tracking via `multiprocessing`
 ✅ Cartesian mesh tally → VTK (ParaView) and optional trajectory recording
 
@@ -141,9 +142,27 @@ capture, (n,2n)) for all isotopes: **all agree to 0.000 %** — PyNeut reads and
 interpolates the data identically to OpenMC, so any transport difference is
 physics-kernel, not data-layer.
 
+### Criticality (k-eigenvalue)
+
+`python Validation/OpenMC_Comparison/validate_keff.py` — PyNeut's fission-source
+power iteration vs OpenMC's `eigenvalue` mode on bare U235 metal spheres (same
+density and ENDF data, matched geometry), graded by the k_eff z-score:
+
+| Sphere R (cm) | PyNeut k_eff | OpenMC k_eff | z | Status |
+|--------------:|-------------:|-------------:|--:|:------:|
+| 6.0 (subcritical) | 0.7476 ± 0.0040 | 0.7351 ± 0.0015 | 2.9 | WARNING |
+| 8.7 (≈ critical) | 1.0257 ± 0.0040 | 1.0195 ± 0.0023 | 1.3 | OK |
+| 11.0 (supercritical) | 1.2273 ± 0.0048 | 1.2272 ± 0.0026 | 0.0 | OK |
+
+PyNeut reproduces the **~8.7 cm bare-U235 critical radius** and matches OpenMC to
+within statistics near and above critical (k agrees to 0.0002 at R = 11 cm). The
+high-leakage bias at R = 6 cm is consistent with the **Watt χ** approximation
+(vs OpenMC's tabulated ENDF χ), whose spectrum-shape effect is largest where
+leakage dominates — see [Limitations](#current-limitations).
+
 ### Unit tests
 
-`pytest` — **117 passing** (geometry vs analytic & trimesh ground truth,
+`pytest` — **131 passing** (geometry vs analytic & trimesh ground truth,
 material/number-density math, cross-section reader, scattering kinematics,
 inelastic physics, batch-statistics, tally uncertainties, transport diagnostics).
 
@@ -237,13 +256,14 @@ or converted from [NNDC ENDF/B-VIII](https://www.nndc.bnl.gov/endf/).
 src/
 ├── cross_section_read.py   # ENDF reader: XS, angular & secondary-energy distributions
 ├── angular_distribution.py # Tabulated elastic (MT=2) angular sampling
-├── material.py             # Material number density & atom mass
+├── material.py             # Material number density, atom mass, Nuclide & mixtures
 ├── medium.py               # CSG primitives: Region, Plane, Cylinder, Sphere, Box
 ├── geometry.py             # Ray–surface boundary search
-├── physics.py              # Elastic/inelastic kinematics, evaporation, anisotropy
+├── physics.py              # Elastic/inelastic kinematics, evaporation, Watt χ
 ├── vt_calc.py              # Free-gas (Maxwell–Boltzmann) target velocity sampling
 ├── settings.py             # Transport mode (analog vs implicit-capture)
-├── simulation.py           # Transport loop + secondary-neutron bank
+├── simulation.py           # Transport loop + secondary-neutron & fission bank
+├── criticality.py          # k-eigenvalue fission-source power iteration
 ├── tally.py                # Scalar results accumulation
 ├── mesh.py                 # Cartesian mesh tally → VTK
 └── random_number_generator.py
@@ -259,7 +279,7 @@ src/
 | Inelastic — discrete | MT 51–90, two-body kinematics, isotropic in CM |
 | Inelastic — continuum / (n,xn) | (n,2n)=MT16, (n,3n)=MT17, continuum=MT91; correlated energy–angle (ENDF Law 61) with Law 4 and Maxwellian-evaporation fallbacks; the two/three neutrons are sampled **independently**; secondaries banked and tracked |
 | Absorption | MT 102/103/104/105/106/107 summed (capture removes the neutron) |
-| Fission | MT 18 cross section scored as absorption — **no fission neutrons produced yet** |
+| Fission | MT 18. In analog `criticality` mode emits ν̄ (tabulated total yield) prompt neutrons per fission with a Watt χ spectrum into the next-generation fission bank (→ k_eff via `criticality.py`); in `shielding` mode scored as absorption |
 | Cross sections | ENDF/B-VIII, lin–lin interpolated (verified identical to OpenMC) |
 | Variance reduction | Implicit capture + weight-cutoff Russian roulette (shielding mode) |
 
@@ -296,8 +316,10 @@ validation above.
   kernel samples the reacting isotope per collision. There is no built-in
   natural-abundance database yet, so isotopes are listed explicitly with their
   number densities or atom fractions.
-- **No fission multiplication / k-eigenvalue** — fission is absorption-only; the
-  `criticality` settings mode exists but does not yet produce fission neutrons.
+- **k-eigenvalue uses an approximate fission source** — the analog `criticality`
+  mode produces fission neutrons and estimates k_eff, but with a Watt χ spectrum
+  rather than the tabulated ENDF fission spectrum, and total ν̄ (prompt + delayed
+  lumped, so no delayed-neutron time kinetics / β_eff).
 - **Charged-particle channels** (n,p), (n,α) … remove the neutron but do not
   transport the charged product or any (n,xn) gammas.
 - **Neutrons only** — no photon transport.
@@ -312,7 +334,7 @@ validation above.
 ## Testing & Validation
 
 ```bash
-# Unit tests (117 passing)
+# Unit tests (131 passing)
 pytest -q
 
 # Full PyNeut-vs-OpenMC suite (needs openmc)
@@ -320,6 +342,7 @@ cd Validation/OpenMC_Comparison
 python run_all.py                 # N = 10 000, writes validation_results.csv
 python run_all.py --n 2000        # faster smoke run
 python validate_xs.py             # cross-section reader check only
+python validate_keff.py           # k-eigenvalue vs OpenMC (bare U235 spheres)
 
 # Exact analytic benchmarks (no OpenMC needed)
 python Validation/analytic_benchmarks.py
@@ -360,16 +383,17 @@ collision events without any hand-editing. Because the per-vertex payload and
 the current 4.7 MB JSON export scale poorly, the bundle will move to a binary
 container (compressed `.npz` or Parquet) with optional track down-sampling.
 
-**2. Criticality (k-eigenvalue) and a fission-neutron source.** Fission
-(MT = 18) is currently scored as absorption only, so the code cannot estimate the
-effective multiplication factor k_eff. The missing pieces are the average
-neutron yield ν and a fission emission spectrum χ (a Watt distribution), the
-explicit emission of ν secondary neutrons per fission event, and a
-generation-based fission-bank iteration that discards inactive cycles before
-accumulating k = (neutron production) / (neutron loss). The secondary-neutron
-bank already exists (it carries the (n,xn) children) and `statistics.py` already
-supplies batch-mean standard errors, so the eigenvalue mode slots into the
-existing transport loop rather than demanding a rewrite.
+**2. Criticality (k-eigenvalue) — implemented, with refinements outstanding.**
+The analog `criticality` mode now emits ν̄ (the tabulated total fission yield)
+prompt neutrons per fission, sampled from a Watt χ spectrum, into a fission bank;
+`criticality.py` runs the generation-based power iteration, discarding inactive
+settling cycles before averaging k = (neutrons produced) / (neutrons started)
+over the active cycles with `statistics.py` batch-mean standard errors. On bare
+U235 metal spheres this reproduces the ≈8.7 cm critical radius (k ≈ 1.03 at
+R = 8.7 cm) and tracks OpenMC's eigenvalue. The remaining refinements are reading
+the tabulated ENDF χ in place of the Watt approximation, separating prompt from
+delayed ν for time kinetics / β_eff, and validating additional fissile isotopes
+and ICSBEP benchmarks.
 
 **3. Performance, profiled before optimised.** Measured throughput is
 ~3–6 × 10³ particles/s/core and scales near-linearly across cores through

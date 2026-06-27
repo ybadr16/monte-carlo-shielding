@@ -103,6 +103,36 @@ def sample_maxwellian(temperature_ev, rng):
     val = -np.log(r1) - np.log(r2) * (np.cos(np.pi * r3 / 2.0) ** 2)
     return temperature_ev * val
 
+# Watt fission-spectrum parameters χ(E) ∝ exp(-E/a)·sinh(√(bE)), a in eV, b in 1/eV.
+# ENDF/B-VIII thermal-fission values; used when the tabulated χ is not parsed.
+WATT_PARAMS = {
+    "U235": (0.988e6, 2.249e-6),
+    "U233": (0.977e6, 2.546e-6),
+    "Pu239": (0.966e6, 2.842e-6),
+}
+DEFAULT_WATT = WATT_PARAMS["U235"]
+
+
+def sample_watt_spectrum(rng, a=DEFAULT_WATT[0], b=DEFAULT_WATT[1]):
+    """Sample an outgoing energy (eV) from the Watt fission spectrum
+    χ(E) ∝ exp(-E/a)·sinh(√(bE)).
+
+    Uses the standard Maxwellian-shift method (as in OpenMC): draw a Maxwellian
+    energy w with parameter `a`, then E = w + a²b/4 + (2ξ-1)·√(a²b·w). `a` is in
+    eV and `b` in 1/eV; the result E = w + (√w - √(a²b)/2·sign)² stays
+    non-negative. The default is U235 thermal fission (mean = 1.5a + a²b/4 ≈
+    2.03 MeV).
+    """
+    w = sample_maxwellian(a, rng)
+    a2b = a * a * b
+    return w + a2b / 4.0 + (2.0 * rng.random() - 1.0) * np.sqrt(a2b * w)
+
+
+def watt_params_for(element):
+    """Watt (a, b) for a fissile isotope, defaulting to U235 if unknown."""
+    return WATT_PARAMS.get(element, DEFAULT_WATT)
+
+
 def calculate_E_cm_prime(initial_energy, A, sampler):
     if initial_energy > 10:
         ratio = A / (A + 1)
