@@ -156,7 +156,11 @@ class TestTrimeshComparisons:
 
         trimesh_dist = get_trimesh_plane_dist(A, B, C, D, origin, direction)
 
-        plane = Plane(A, B, C, D)
+        # The trimesh helper uses the standard half-space convention
+        # Ax+By+Cz+D=0, whereas PyNeut's Plane constructor stores -D
+        # (so its inside test is Ax+By+Cz <= D).  Negate D so both describe
+        # the same physical plane before comparing.
+        plane = Plane(A, B, C, -D)
         d = np.array(direction) / np.linalg.norm(direction)
         user_dist = plane.nearest_surface_method(*origin, *d)
 

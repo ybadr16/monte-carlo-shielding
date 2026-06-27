@@ -1,5 +1,5 @@
-title: Monte Carlo Neutron Transport
-description: Educational Monte Carlo code for neutron transport simulation
+title: PyNeut — Python Neutronics
+description: Continuous-energy Monte Carlo neutron transport, validated against OpenMC
 theme: jekyll-theme-cayman
 
 # GitHub metadata

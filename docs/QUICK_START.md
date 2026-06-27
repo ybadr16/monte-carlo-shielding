@@ -6,18 +6,37 @@ Step-by-step examples for common use cases.
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/ybadr16/PYNEUT
-cd monte-carlo-shielding
+git clone https://github.com/ybadr16/PyNeut
+cd PyNeut
 ```
 
 2. Install dependencies:
 ```bash
-pip install numpy h5py
+pip install -e .          # or: pip install numpy h5py
 ```
 
-3. Download ENDF/B-VIII data:
-- Place HDF5 files in `./endfb/neutron/` directory
-- Required files: `Pb208.h5`, `U235.h5`, etc.
+3. ENDF/B-VIII data:
+- HDF5 files live in `./endfb/neutron/`. The repo ships Al27, B10, Be9, C12,
+  Cd112, Fe56, O16, Pb207, Pb208, U235.
+
+> ### ⚠️ API note (read this first)
+> Every example below passes a **10-element** args tuple to
+> `simulate_single_particle`, ending in a `Settings` object, and every particle
+> `state` includes a **`weight`** field:
+>
+> ```python
+> from src.settings import Settings
+> settings = Settings(mode="shielding", particles=num_particles)
+>
+> state = {"x":…, "y":…, "z":…, "theta":…, "phi":…,
+>          "energy": 1e6, "weight": 1.0, "has_interacted": False}
+>
+> args = (state, reader, regions, A, N, sampler,
+>         region_bounds, track_coordinates, rng, settings)   # <- trailing settings
+> ```
+>
+> `mode="shielding"` enables implicit capture (weighted leakage); `mode="criticality"`
+> runs analog transport. Energies are in **eV**, distances in **cm**.
 
 ## Example 1: Simple Slab Shielding
 
@@ -31,13 +50,15 @@ from src.vt_calc import VelocitySampler
 from src.simulation import simulate_single_particle
 from src.tally import Tally
 from src.random_number_generator import RNGHandler
+from src.settings import Settings
 from multiprocessing import Pool
 import numpy as np
 
 # Setup
 reader = CrossSectionReader("./endfb")
-lead = Material("Lead", 11.35, 208, 2.5)
+lead = Material("Lead", 11.35, 208, atomic_weight_ratio=207.2)
 sampler = VelocitySampler(lead.kg_mass)
+settings = Settings(mode="shielding", particles=1000)
 
 # Geometry: 10 cm lead slab from x=0 to x=10
 regions = [
@@ -70,22 +91,23 @@ regions = [
 ]
 
 # Source: 1000 neutrons at 1 MeV, starting at x=-5
-num_particles = 1000
+num_particles = settings.num_particles
 rngs = [RNGHandler(seed=12345 + i) for i in range(num_particles)]
 particle_states = [
     {
         "x": -5, "y": 0, "z": 0,
         "theta": 0, "phi": 0,  # Moving in +x direction
         "energy": 1e6,
+        "weight": 1.0,
         "has_interacted": False
     }
     for _ in rngs
 ]
 
-# Simulate
+# Simulate (note trailing `settings`)
 args = [
-    (state, reader, regions, lead.atomic_weight_ratio, 
-     lead.number_density, sampler, None, False, rng)
+    (state, reader, regions, lead.atomic_weight_ratio,
+     lead.number_density, sampler, None, False, rng, settings)
     for state, rng in zip(particle_states, rngs)
 ]
 
@@ -149,15 +171,16 @@ particle_states = [
         "theta": rng.uniform(0, np.pi),
         "phi": rng.uniform(0, 2*np.pi),
         "energy": 1e6,
+        "weight": 1.0,
         "has_interacted": False
     }
     for rng in rngs
 ]
 
-# Run simulation with detector region
+# Run simulation with detector region (note trailing `settings`)
 args = [
     (state, reader, regions, lead.atomic_weight_ratio,
-     lead.number_density, sampler, detector_region, False, rng)
+     lead.number_density, sampler, detector_region, False, rng, settings)
     for state, rng in zip(particle_states, rngs)
 ]
 
@@ -219,7 +242,7 @@ track_coordinates = True
 
 args = [
     (state, reader, regions, lead.atomic_weight_ratio,
-     lead.number_density, sampler, None, track_coordinates, rng)
+     lead.number_density, sampler, None, track_coordinates, rng, settings)
     for state, rng in zip(particle_states[:10], rngs[:10])  # Only 10 particles
 ]
 
@@ -278,6 +301,7 @@ particle_states = [
         "theta": rng.uniform(0, np.pi),
         "phi": rng.uniform(0, 2*np.pi),
         "energy": watt_spectrum(rng),
+        "weight": 1.0,
         "has_interacted": False
     }
     for rng in rngs
@@ -353,10 +377,10 @@ for thickness in thicknesses:
         )
     ]
     
-    # Run simulation
+    # Run simulation (note trailing `settings`)
     args = [
         (state, reader, regions, lead.atomic_weight_ratio,
-         lead.number_density, sampler, None, False, rng)
+         lead.number_density, sampler, None, False, rng, settings)
         for state, rng in zip(particle_states, rngs)
     ]
     
@@ -447,6 +471,7 @@ particle_states = [
         "theta": np.arccos(2*rng.random() - 1),  # Isotropic
         "phi": 2*np.pi*rng.random(),
         "energy": 1e6,
+        "weight": 1.0,
         "has_interacted": False
     }
     for rng in rngs
@@ -514,7 +539,7 @@ regions = [shield_region, void_region]
 
 ## Next Steps
 
-- See `API_REFERENCE.md` for detailed function documentation
-- See `BUGS_AND_IMPROVEMENTS.md` for known issues
-- Check `examples/` directory for more complex scenarios
-- Read theory documentation for physics background
+- See [`api-reference.md`](api-reference.md) for detailed function documentation
+- See [`index.md`](index.md) for the validation results and current limitations
+- See `main.py` for a complete runnable example with a mesh tally
+- See `Validation/OpenMC_Comparison/` for the PyNeut-vs-OpenMC suite

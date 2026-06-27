@@ -1,6 +1,15 @@
 __pycache__/
 Monte_Carlo_Shielding.egg-info/
 all_trajectories.json
-all_code.py
-CLAUDE.md
-.claude/
+
+# Generated OpenMC data library (machine-specific absolute paths)
+endfb/cross_sections.xml
+
+# Validation run artifacts
+#Validation/OpenMC_Comparison/openmc_runs/
+#Validation/OpenMC_Comparison/validation_results.csv
+#sValidation/OpenMC_Comparison/benchmark_*/
+
+# Windows / WSL metadata
+*:Zone.Identifier
+.ipynb_checkpoints/

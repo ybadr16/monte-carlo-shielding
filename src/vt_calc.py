@@ -37,43 +37,30 @@ class VelocitySampler:
             if np.random.uniform(0, 1) < p:
                 return x
 
-    def sample_velocity(self, vn, max_attempts=1000):
-        """
-        Samples v_T based on the given process with input vn.
+    def sample_velocity(self, vn, max_attempts=1000, return_mu=False):
+        """Free-gas (SVT) target velocity by acceptance-rejection on the relative speed.
 
-        Parameters:
-            vn (float): Input velocity magnitude (from other parts of the code)
-            max_attempts (int): Maximum attempts to find an accepted sample
-
-        Returns:
-            float: Accepted sample v_T
-
-        Raises:
-            ValueError: If no accepted sample is found within max_attempts
+        With return_mu, returns (v_t, mu); the speed and its cosine must be used
+        together or the speed-angle correlation (detailed balance) is lost.
         """
         for attempt in range(max_attempts):
-            # Step 1: Sample from q(x)
             xi1 = np.random.uniform(0, 1)
             if xi1 < 2 / (np.sqrt(np.pi) * vn + 2):
-                # Sample from 2x^3 * exp(-x^2)
                 x = self._sample_from_2x3_exp_neg_x2()
             else:
-                # Sample from 4πx^2 * exp(-x^2)
                 x = self._sample_from_4pi_x2_exp_neg_x2()
 
-            # Convert x to v_T
             v_t = x / self.beta
 
-            # Sample mu
             xi2 = np.random.uniform(0, 1)
             mu = 2 * xi2 - 1
 
-            # Step 2: Acceptance criterion
+            # accept with probability proportional to the relative speed
             xi3 = np.random.uniform(0, 1)
             acceptance_prob = np.sqrt((vn**2 + v_t**2 - 2 * vn * v_t * mu)) / (vn + v_t)
 
             if xi3 < acceptance_prob:
-                return v_t
+                return (v_t, mu) if return_mu else v_t
 
         raise ValueError("Failed to find an accepted sample within the maximum attempts")
 

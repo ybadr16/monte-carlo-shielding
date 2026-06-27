@@ -1,50 +1,28 @@
 """
-PyNeut vs OpenMC — C12 (graphite) validation cases
+PyNeut vs OpenMC — C12 (graphite) validation case
 
 Cases
 -----
-  c12_cyl_2mev : Graphite cylinder R=10 cm, H=20 cm (half-height=10), E=2 MeV
+  c12_cyl_2mev : Graphite cylinder R=10 cm, half-height=10 cm, E=2 MeV
 
-Reference: hardcoded from Inelastic_Validations notebook.
+OpenMC reference is computed live against the local data library.
 """
-from _common import run_pyneut, make_result, print_result
+from _common import validate_case, print_result
 
-# ---------------------------------------------------------------------------
-# OpenMC reference (notebook, hardcoded)
-# ---------------------------------------------------------------------------
-_OMC = (1.0000, 1_003_104)   # leakage, avg_energy_eV
-
-# ---------------------------------------------------------------------------
-# Case definition
-# ---------------------------------------------------------------------------
-_CASE = {
-    'name': 'c12_cyl_2mev',
-    'el':   'C12',
-    'rho':  2.267,
-    'A':    12.011,
-    'E':    2e6,
-    'geo':  'cyl',
-    'dims': [10.0, 10.0],   # [radius_cm, half_height_cm]
-}
+_CASES = [
+    {'name': 'c12_cyl_2mev', 'el': 'C12', 'rho': 2.267, 'A': 12.011,
+     'E': 2e6, 'geo': 'cyl', 'dims': [10.0, 10.0]},   # [radius, half-height] cm
+]
 
 
 def run(n_particles=10_000):
-    print(f"  Running {_CASE['name']} …")
-    pyn_leak, pyn_e = run_pyneut(_CASE, n_particles)
-    omc_leak, omc_e = _OMC
-    r = make_result(
-        case_name    = _CASE['name'],
-        isotope      = 'C12',
-        geometry     = 'cyl',
-        energy_mev   = 2.0,
-        omc_leak     = omc_leak,
-        omc_energy   = omc_e,
-        pyn_leak     = pyn_leak,
-        pyn_energy   = pyn_e,
-        openmc_source= 'notebook',
-    )
-    print_result(r)
-    return [r]
+    results = []
+    for case in _CASES:
+        print(f"  Running {case['name']} …")
+        r = validate_case(case, n_particles, isotope='C12')
+        print_result(r)
+        results.append(r)
+    return results
 
 
 if __name__ == '__main__':
