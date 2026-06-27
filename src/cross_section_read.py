@@ -299,6 +299,7 @@ class CrossSectionReader:
         self._available_inelastic_mts = {}
         self.angular_dists = {}
         self.secondary_dists = {}
+        self._nu_cache = {}
 
     def _load_data_to_cache(self, element: str, mt: int):
         # Map common names
@@ -492,3 +493,37 @@ class CrossSectionReader:
         Sigma_total = Sigma_el + Sigma_in + Sigma_cap + Sigma_fis
 
         return Sigma_el, Sigma_in, Sigma_cap, Sigma_fis, Sigma_total
+
+    def _load_nu(self, element):
+        """Cache the total fission neutron yield ν̄(E) table, or None if absent."""
+        element_map = {"C": "C0", "Graphite": "C0", "Be": "Be9", "Al": "Al27", "Fe": "Fe56", "Pb": "Pb208"}
+        actual = element_map.get(element, element)
+        file_path = os.path.join(self.base_path, f"neutron/{actual}.h5")
+        table = None
+        if os.path.exists(file_path):
+            try:
+                with h5py.File(file_path, 'r') as f:
+                    root = f"neutron/{actual}" if f"neutron/{actual}" in f else actual
+                    path = f"{root}/total_nu/yield"
+                    if path in f:
+                        arr = f[path][:]  # (2, N): row0 energy (eV), row1 ν̄
+                        table = (arr[0], arr[1])
+            except Exception:
+                table = None
+        self._nu_cache[element] = table
+
+    def get_nu(self, element, energy):
+        """Total prompt+delayed fission neutron yield ν̄ at the incident energy.
+
+        Returns 0.0 for non-fissile isotopes (no total_nu table).
+        """
+        if element not in self._nu_cache:
+            self._load_nu(element)
+        table = self._nu_cache[element]
+        if table is None:
+            return 0.0
+        return float(np.interp(energy, table[0], table[1]))
+
+    def is_fissionable(self, element):
+        """True if the isotope carries fission data (MT=18 + a ν̄ table)."""
+        return self.get_nu(element, 1.0) > 0.0 or self.get_cross_section(element, 18, 1.0) > 0.0

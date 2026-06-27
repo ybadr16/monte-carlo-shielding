@@ -13,3 +13,6 @@ endfb/cross_sections.xml
 # Windows / WSL metadata
 *:Zone.Identifier
 .ipynb_checkpoints/
+
+paper_template/
+

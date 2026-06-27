@@ -5,6 +5,8 @@ from .physics import (
     sample_new_direction_cosines,
     sample_maxwellian,
     get_nuclear_temperature,
+    sample_watt_spectrum,
+    watt_params_for,
 )
 import numpy as np
 
@@ -25,6 +27,7 @@ def simulate_single_particle(args):
     total_absorbed_weight = 0.0
     absorbed_events = []
     fission_events = 0
+    fission_bank = []
     escaped_weight = 0.0
     escaped_energy_sum = 0.0
     region_detections = 0
@@ -38,7 +41,7 @@ def simulate_single_particle(args):
 
         status, child_particles, trajectory_segment, abs_weight, abs_coords = run_particle_kernel(
             current_state, reader, mediums, A, N, sampler, region_bounds, track_coordinates, rng, settings,
-            counters
+            counters, fission_bank
         )
 
         if is_source:
@@ -78,6 +81,7 @@ def simulate_single_particle(args):
         "trajectory": full_trajectory if track_coordinates else None,
         "physics_counts": counters,
         "source_uncollided": source_uncollided,
+        "fission_sites": fission_bank,
     }
 
 
@@ -158,7 +162,7 @@ def _emit_secondary_neutron(reader, element, mt, E_in, E_avail, A, rng):
 
 
 def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, track_coordinates, rng, settings,
-                        counters=None):
+                        counters=None, fission_bank=None):
     epsilon = 1e-6
     trajectory = [] if track_coordinates else None
     absorbed_weight_local = 0.0
@@ -298,6 +302,24 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
             elif interaction_prob < (p_scatter_el + p_scatter_in):
                 pass
             else:
+                # absorption. With a fission bank (criticality / k-eff driver),
+                # split fission off capture and emit ν prompt neutrons into the
+                # NEXT generation's source; otherwise fission is pure absorption.
+                if (fission_bank is not None and s_fis_i > 0.0
+                        and rng.random() < s_fis_i / (s_cap_i + s_fis_i)):
+                    nu_bar = reader.get_nu(iso.element, state["energy"])
+                    n_emit = int(nu_bar + rng.random())  # integer multiplicity
+                    a_w, b_w = watt_params_for(iso.element)
+                    for _ in range(n_emit):
+                        fission_bank.append({
+                            "x": state["x"], "y": state["y"], "z": state["z"],
+                            "theta": np.arccos(2 * rng.random() - 1),
+                            "phi": 2 * np.pi * rng.random(),
+                            "energy": sample_watt_spectrum(rng, a_w, b_w),
+                            "weight": 1.0, "has_interacted": False,
+                        })
+                    _inc(counters, "fission_events")
+                    return "fission", children, trajectory, absorbed_weight_local, absorbed_coords_local
                 absorbed_weight_local += state["weight"]
                 absorbed_coords_local.append((state["x"], state["y"], state["z"], state["weight"]))
                 return "absorbed", children, trajectory, absorbed_weight_local, absorbed_coords_local
