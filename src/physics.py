@@ -1,55 +1,37 @@
 import numpy as np
 
-# Constants
-m_n = 1.674927471e-27  # Neutron mass in kg
-eV_to_J = 1.60217663e-19 # Conversion factor
+m_n = 1.674927471e-27  # neutron mass, kg
+eV_to_J = 1.60217663e-19
 
-# ==========================================
-#  VECTOR KINEMATICS HELPERS
-# ==========================================
 
 def get_vectors_and_vcm(initial_energy, A, sampler, rng):
-    """
-    Generates velocity vectors for the neutron and target,
-    and calculates the Center of Mass (CM) velocity.
-    """
-    # 1. Neutron Scalar Speed (Lab Frame)
+    """Lab/CM velocity vectors for a neutron on a free-gas target."""
     v_n = np.sqrt(2 * initial_energy * eV_to_J / m_n)
-
-    # 2. Target Scalar Speed (Sampled from Free Gas)
-    if initial_energy > 10.0:
-        v_t = 0.0
-    else:
-        v_t = sampler.sample_velocity(vn=v_n)
-
-    # 3. Create Vectors
     vec_vn = np.array([0.0, 0.0, v_n])
 
-    if v_t > 0:
-        mu_t = 2 * rng.random() - 1
-        phi_t = 2 * np.pi * rng.random()
-        sin_t = np.sqrt(max(0.0, 1.0 - mu_t**2))
-
-        vec_vt = np.array([
-            v_t * sin_t * np.cos(phi_t),
-            v_t * sin_t * np.sin(phi_t),
-            v_t * mu_t
-        ])
-    else:
+    # Target motion is negligible above ~10 eV. Below it the target speed and
+    # its cosine to the neutron are sampled together, keeping the speed-angle
+    # correlation that lets the neutron upscatter toward thermal equilibrium.
+    if initial_energy > 10.0:
         vec_vt = np.zeros(3)
+    else:
+        v_t, mu_t = sampler.sample_velocity(vn=v_n, return_mu=True)
+        if v_t > 0:
+            phi_t = 2 * np.pi * rng.random()
+            sin_t = np.sqrt(max(0.0, 1.0 - mu_t**2))
+            vec_vt = np.array([
+                v_t * sin_t * np.cos(phi_t),
+                v_t * sin_t * np.sin(phi_t),
+                v_t * mu_t,
+            ])
+        else:
+            vec_vt = np.zeros(3)
 
-    # 4. Calculate Center of Mass Velocity
     vec_vcm = (vec_vn + A * vec_vt) / (A + 1)
-
-    # 5. Neutron Velocity in CM Frame
     vec_Vn = vec_vn - vec_vcm
-
     return vec_vn, vec_vcm, vec_Vn
 
 def scatter_isotropic_cm(vec_Vn, magnitude, rng):
-    """
-    Scatters a vector isotropically in 3D.
-    """
     mu_cm = 2 * rng.random() - 1
     phi_cm = 2 * np.pi * rng.random()
     sin_cm = np.sqrt(max(0.0, 1.0 - mu_cm**2))
@@ -61,62 +43,19 @@ def scatter_isotropic_cm(vec_Vn, magnitude, rng):
     vec_Vn_prime = magnitude * np.array([u_prime, v_prime, w_prime])
     return vec_Vn_prime, mu_cm
 
-def scatter_anisotropic_cm(vec_Vn, magnitude, rng, mu_bar=0.0):
-    """
-    Scatters with a forward bias (Linear Anisotropy).
-    mu_bar: Average scattering cosine (0=Isotropic, 1=Forward).
-    """
-    if abs(mu_bar) < 1e-3:
-        return scatter_isotropic_cm(vec_Vn, magnitude, rng)
-
-    # Sample mu from P(mu) = 1 + 3*mu_bar*mu (Linear Approximation)
-    # Rejection sampling method:
-    while True:
-        mu = 2 * rng.random() - 1
-        prob = 0.5 * (1 + 3 * mu_bar * mu)
-        max_p = 0.5 * (1 + 3 * abs(mu_bar))
-        if rng.random() * max_p < prob:
-            mu_cm = mu
-            break
-
-    phi_cm = 2 * np.pi * rng.random()
-    sin_cm = np.sqrt(max(0.0, 1.0 - mu_cm**2))
-
-    u_prime = sin_cm * np.cos(phi_cm)
-    v_prime = sin_cm * np.sin(phi_cm)
-    w_prime = mu_cm
-
-    vec_Vn_prime = magnitude * np.array([u_prime, v_prime, w_prime])
-    return vec_Vn_prime, mu_cm
-
-# ==========================================
-#  MAIN SCATTERING FUNCTIONS
-# ==========================================
-
 def elastic_scattering(initial_energy, A, sampler, rng):
+    """Free-gas elastic scattering, isotropic in CM.
+
+    The transport loop draws the elastic CM cosine from the tabulated ENDF
+    angular data instead; this self-contained kernel is used by the discrete
+    fallbacks and the unit tests.
     """
-    Performs elastic scattering using full Vector Kinematics + Anisotropy.
-    """
-    # 1. Get Kinematics Vectors
     vec_vn, vec_vcm, vec_Vn = get_vectors_and_vcm(initial_energy, A, sampler, rng)
     Vn_speed = np.linalg.norm(vec_Vn)
 
-    # 2. ANISOTROPY CHECK
-    # Lead (A=208) scatters forward at high energy.
-    # We use a linear ramp approximation for mu_bar based on energy.
-    mu_bar = 0.0
-    if A > 50 and initial_energy > 50e3: # Only for heavy nuclei > 50 keV
-        # Logarithmic ramp: 0.05 at 100keV -> 0.6 at 14MeV
-        mu_bar = min(0.6, 0.05 * np.log10(initial_energy/1e4))
-        mu_bar = max(0.0, mu_bar)
-
-    # 3. Scatter in CM (Anisotropic)
-    vec_Vn_prime, mu_cm = scatter_anisotropic_cm(vec_Vn, Vn_speed, rng, mu_bar)
-
-    # 4. Transform back to Lab Frame
+    vec_Vn_prime, mu_cm = scatter_isotropic_cm(vec_Vn, Vn_speed, rng)
     vec_vn_prime = vec_Vn_prime + vec_vcm
 
-    # 5. Final Energy & Angle
     vn_prime_speed_sq = np.dot(vec_vn_prime, vec_vn_prime)
     E_prime = 0.5 * m_n * vn_prime_speed_sq / eV_to_J
 
@@ -129,13 +68,10 @@ def elastic_scattering(initial_energy, A, sampler, rng):
     return max(1e-5, E_prime), mu_cm, max(-1.0, min(1.0, mu_lab))
 
 def inelastic_scattering(initial_energy, A, Q_value, sampler, rng):
-    """
-    Performs discrete inelastic scattering.
-    """
+    """Discrete-level inelastic scattering, isotropic in CM."""
     vec_vn, vec_vcm, vec_Vn = get_vectors_and_vcm(initial_energy, A, sampler, rng)
     Vn_speed = np.linalg.norm(vec_Vn)
 
-    # Energy Analysis in CM
     E_n_cm_joules = 0.5 * m_n * Vn_speed**2
     E_n_cm = E_n_cm_joules / eV_to_J
     Total_KE_cm = E_n_cm * (A + 1) / A
@@ -143,15 +79,12 @@ def inelastic_scattering(initial_energy, A, Q_value, sampler, rng):
     if Total_KE_cm <= Q_value:
         return elastic_scattering(initial_energy, A, sampler, rng)
 
-    # Subtract Energy Cost
     Total_KE_cm_prime = Total_KE_cm - Q_value
     E_n_cm_prime = Total_KE_cm_prime * A / (A + 1)
     Vn_prime_speed = np.sqrt(2 * E_n_cm_prime * eV_to_J / m_n)
 
-    # Inelastic is Isotropic in CM (Approximation)
     vec_Vn_prime, mu_cm = scatter_isotropic_cm(vec_Vn, Vn_prime_speed, rng)
 
-    # Transform back
     vec_vn_prime = vec_Vn_prime + vec_vcm
     vn_prime_speed_sq = np.dot(vec_vn_prime, vec_vn_prime)
     E_prime = 0.5 * m_n * vn_prime_speed_sq / eV_to_J
@@ -162,28 +95,13 @@ def inelastic_scattering(initial_energy, A, Q_value, sampler, rng):
     return max(1e-5, E_prime), mu_cm, max(-1.0, min(1.0, mu_lab))
 
 def sample_maxwellian(temperature_ev, rng):
-    """
-    Samples energy from Maxwellian distribution: f(E) ~ sqrt(E)*exp(-E/T)
-    Used for Evaporation and Fission.
-    """
+    """Evaporation/fission energy from f(E) ~ sqrt(E) exp(-E/T) (algorithm C64)."""
     r1 = rng.random()
     r2 = rng.random()
     r3 = rng.random()
 
-    # Rejectionless sampling (Rule C64)
     val = -np.log(r1) - np.log(r2) * (np.cos(np.pi * r3 / 2.0) ** 2)
     return temperature_ev * val
-
-# ==========================================
-#  LEGACY / COMPATIBILITY (For Tests)
-# ==========================================
-
-def calculate_mu_lab(mu_cm, E, E_prime, E_cm_prime, A):
-    if E_prime <= 0: return 0.0
-    term1 = mu_cm * np.sqrt(E_cm_prime / E_prime)
-    term2 = (1 / (A + 1)) * np.sqrt(E / E_prime)
-    mu_lab = term1 + term2
-    return max(-1.0, min(1.0, mu_lab))
 
 def calculate_E_cm_prime(initial_energy, A, sampler):
     if initial_energy > 10:
@@ -218,57 +136,11 @@ def sample_new_direction_cosines(u, v, w, mu_lab, rng):
         return u_new/norm, v_new/norm, w_new/norm, phi
 
 def get_nuclear_temperature(energy, A):
-    """
-    Calculates Nuclear Temperature (T) using the Fermi Gas Model.
-
-    Parameters:
-        energy: Available excitation energy in eV
-        A: Mass number of the target nucleus
-
-    Returns:
-        Nuclear temperature in eV
-
-    Formula: T = sqrt(U/a) where a = A/8 MeV^-1
-    """
+    """Fermi-gas nuclear temperature, T = sqrt(U/a) with a = A/8 MeV^-1. energy, T in eV."""
     if energy <= 0:
-        return 1e3  # Safety floor: 1 MeV
+        return 1e3
 
-    # Level density parameter (MeV^-1)
     a = A / 8.0
-
-    # Convert energy to MeV for the formula
     energy_MeV = energy / 1e6
-
-    # Calculate temperature in MeV
     T_MeV = np.sqrt(energy_MeV / a)
-
-    # Convert back to eV and return
     return T_MeV * 1e6
-
-def sample_forward_biased_mu(E_in, A, rng):
-    """
-    Sample mu with physics-based forward bias for high-energy (n,xn) reactions.
-    """
-    # For light nuclei (Be, C), less forward peaked than heavy nuclei
-    # For heavy nuclei (Pb), more forward peaked
-
-    log_E = np.log10(max(E_in, 1.0))
-
-    # Base forward bias scaling with energy
-    if log_E > 6:  # > 1 MeV
-        base_bias = 0.1 + 0.4 * (log_E - 6) / 1.5  # Ramps up to ~0.5 at 14 MeV
-    else:
-        base_bias = 0.0
-
-    # A-dependence: heavier = more forward peaked
-    a_factor = 1 - np.exp(-A / 50.0)  # Saturates for heavy nuclei
-
-    forward_bias = min(0.6, base_bias * a_factor)
-
-    # Sample from P(mu) ~ 1 + 3*f*mu using rejection
-    max_p = 0.5 * (1 + 3 * abs(forward_bias))
-    while True:
-        mu = 2 * rng.random() - 1
-        prob = 0.5 * (1 + 3 * forward_bias * mu)
-        if rng.random() * max_p < prob:
-            return mu

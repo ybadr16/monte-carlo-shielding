@@ -299,7 +299,9 @@ class TestTrimeshValidation:
 
     def test_plane_basic(self):
         """Basic plane intersection - validated by Trimesh"""
-        plane = Plane(0, 0, 1, -5)  # z = 5
+        # PyNeut convention: Plane(A,B,C,D) describes Ax+By+Cz = D, so the
+        # plane z = 5 is Plane(0, 0, 1, 5).
+        plane = Plane(0, 0, 1, 5)  # z = 5
         distance = plane.nearest_surface_method(0, 0, 0, 0, 0, 1)
         assert distance == pytest.approx(5, abs=1e-6)
 

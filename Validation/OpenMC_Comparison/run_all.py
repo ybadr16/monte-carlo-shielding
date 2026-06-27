@@ -27,23 +27,31 @@ import validate_Be9
 import validate_Al27
 import validate_C12
 import validate_O16
+import validate_thermal
 import validate_xs
 
 CSV_PATH = os.path.join(HERE, 'validation_results.csv')
 
 _MODULES = {
-    'Pb208': validate_Pb208,
-    'Fe56':  validate_Fe56,
-    'Be9':   validate_Be9,
-    'Al27':  validate_Al27,
-    'C12':   validate_C12,
-    'O16':   validate_O16,
+    'Pb208':   validate_Pb208,
+    'Fe56':    validate_Fe56,
+    'Be9':     validate_Be9,
+    'Al27':    validate_Al27,
+    'C12':     validate_C12,
+    'O16':     validate_O16,
+    'Thermal': validate_thermal,
 }
 
 _CSV_FIELDS = [
     'case', 'isotope', 'geometry', 'energy_MeV',
-    'openmc_leakage', 'pyneut_leakage', 'leakage_diff_pct',
-    'openmc_energy_eV', 'pyneut_energy_eV', 'energy_diff_pct',
+    'openmc_leakage', 'openmc_leakage_sem',
+    'pyneut_leakage', 'pyneut_leakage_sem',
+    'leakage_diff_pct', 'leakage_zscore',
+    'openmc_energy_eV', 'openmc_energy_sem',
+    'pyneut_energy_eV', 'pyneut_energy_sem',
+    'energy_diff_pct', 'energy_zscore',
+    'spectrum_chi2_dof', 'spectrum_status',
+    'nxn_events', 'parent_maxwellian_pct', 'child_maxwellian_pct', 'n3n_events',
     'openmc_source', 'status',
 ]
 
@@ -88,14 +96,22 @@ def main():
     # -------------------------------------------------------------------------
     _banner('SUMMARY')
     statuses = [r['status'] for r in all_results]
-    counts = {s: statuses.count(s) for s in ('OK', 'WARNING', 'FAIL', 'NO_REF')}
-    print(f"\n  {'Case':<28} {'Status':<10} {'Leakage diff':>14} {'Energy diff':>14}")
-    print(f"  {'-'*70}")
+    counts = {s: statuses.count(s)
+              for s in ('OK', 'WARNING', 'FAIL', 'NO_REF', 'NO_SIGMA')}
+    print(f"\n  {'Case':<26} {'Integral':<9} "
+          f"{'Leak z':>7} {'E z':>6}   {'Spectrum':<8} {'χ²/dof':>8} {'Max%':>6}")
+    print(f"  {'-'*76}")
     for r in all_results:
-        ld = f"{r['leakage_diff_pct']:.2f}%" if r['leakage_diff_pct'] is not None else 'N/A'
-        ed = f"{r['energy_diff_pct']:.2f}%"  if r['energy_diff_pct']  is not None else 'N/A'
-        print(f"  {r['case']:<28} {r['status']:<10} {ld:>14} {ed:>14}")
-    print(f"\n  OK={counts['OK']}  WARNING={counts['WARNING']}  FAIL={counts['FAIL']}  NO_REF={counts['NO_REF']}")
+        lz = f"{r['leakage_zscore']:.1f}" if r['leakage_zscore'] is not None else '-'
+        ez = f"{r['energy_zscore']:.1f}"  if r['energy_zscore']  is not None else '-'
+        x2 = f"{r['spectrum_chi2_dof']:.2f}" if r.get('spectrum_chi2_dof') is not None else '-'
+        ss = r.get('spectrum_status') or '-'
+        mx = f"{r['parent_maxwellian_pct']:.0f}" if r.get('parent_maxwellian_pct') is not None else '-'
+        print(f"  {r['case']:<26} {r['status']:<9} "
+              f"{lz:>7} {ez:>6}   {ss:<8} {x2:>8} {mx:>6}")
+    print(f"\n  OK={counts['OK']}  WARNING={counts['WARNING']}  FAIL={counts['FAIL']}"
+          f"  NO_REF={counts['NO_REF']}  NO_SIGMA={counts['NO_SIGMA']}")
+    print("  (z = |OpenMC - PyNeut| / combined standard error; OK ≤ 2σ, WARNING ≤ 4σ)")
     print(f"  Total time: {time.time()-t0:.1f}s")
 
     # -------------------------------------------------------------------------

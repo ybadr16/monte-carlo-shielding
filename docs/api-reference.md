@@ -46,15 +46,15 @@ Get microscopic cross-section for a specific reaction and energy.
 **Returns:**
 - `float`: Microscopic cross-section in barns (10⁻²⁴ cm²)
 
-**Raises:**
-- `ValueError`: Invalid element format or MT number
-- `FileNotFoundError`: HDF5 file not found
-- `KeyError`: Data not found in HDF5 file
-- `RuntimeError`: Error reading HDF5 file
+**Behavior:** Graceful by design — returns `0.0` (rather than raising) when the
+data file is missing, the reaction/MT is absent, or the energy is below the
+reaction threshold. This lets the transport kernel sum channels without guarding
+every call.
 
 **Example:**
 ```python
 sigma = reader.get_cross_section("Pb208", 2, 1e6)  # 1 MeV elastic scatter
+sigma = reader.get_cross_section("Pb208", 9999, 1e6)  # -> 0.0 (no such MT)
 ```
 
 ##### `calculate_macroscopic_xs(microscopic_xs, number_density)`
@@ -73,47 +73,51 @@ Convert microscopic to macroscopic cross-section.
 Σ = σ × N × 10⁻²⁴
 ```
 
+**Behavior:** Returns `0.0` for a non-positive microscopic input (treated as no
+interaction).
+
 **Example:**
 ```python
 N = 3.3e22  # atoms/cm³ for lead
 Sigma = reader.calculate_macroscopic_xs(10.0, N)  # cm⁻¹
 ```
 
-##### `get_macroscopic_xs(element, mt, energy, number_density)`
+##### `get_cross_sections(element, energy, sampler, N, A)`
 
-Convenience method combining cross-section lookup and conversion.
-
-**Parameters:**
-- `element` (str): Nuclide identifier
-- `mt` (int): Reaction MT number
-- `energy` (float): Energy in eV
-- `number_density` (float): Number density in atoms/cm³
-
-**Returns:**
-- `float`: Macroscopic cross-section in cm⁻¹
-
-##### `get_cross_sections(element, energy, sampler, number_density)`
-
-Get all relevant cross-sections for transport calculation.
+Get all macroscopic transport cross-sections at once. Below 10 eV the elastic
+lookup energy is shifted to the CM frame to approximate thermal motion.
 
 **Parameters:**
 - `element` (str): Nuclide identifier
 - `energy` (float): Neutron energy in eV
-- `sampler` (VelocitySampler): For thermal motion calculation
-- `number_density` (float): Number density in atoms/cm³
+- `sampler` (VelocitySampler): For thermal-motion energy shift
+- `N` (float): Number density in atoms/cm³
+- `A` (float): Atomic weight ratio
 
-**Returns:**
-- `Sigma_s` (float): Scattering cross-section (cm⁻¹)
-- `Sigma_a` (float): Absorption cross-section (cm⁻¹)
-- `Sigma_f` (float): Fission cross-section (cm⁻¹), 0 if not fissile
-- `Sigma_t` (float): Total cross-section (cm⁻¹)
+**Returns (5-tuple, all macroscopic cm⁻¹):**
+- `Sigma_el` — elastic scattering
+- `Sigma_in` — neutron-emitting inelastic (MT 16, 17, 51–91)
+- `Sigma_cap` — absorption (MT 102/103/104/105/106/107)
+- `Sigma_fis` — fission (MT 18), 0 if not fissile
+- `Sigma_total` — sum of the above
 
 **Example:**
 ```python
-Sigma_s, Sigma_a, Sigma_f, Sigma_t = reader.get_cross_sections(
-    "U235", 1e6, sampler, 4.8e22
+Sigma_el, Sigma_in, Sigma_cap, Sigma_fis, Sigma_t = reader.get_cross_sections(
+    "U235", 1e6, sampler, 4.8e22, 233.0
 )
 ```
+
+##### Other reader methods
+
+- `get_inelastic_components(element, energy, N)` → `(total, [(mt, Σ, Q), …])`
+  for the available neutron-emitting inelastic channels.
+- `get_elastic_mu(element, energy, rng)` → CM scattering cosine sampled from the
+  tabulated MT=2 angular distribution.
+- `get_secondary_correlated_sample(element, mt, energy, rng)` →
+  `(E_out, mu, success)` from ENDF Law 61 correlated data.
+- `get_secondary_energy(element, mt, energy, rng)` → secondary energy from
+  uncorrelated (Law 4) data, or `None`.
 
 ---
 
@@ -234,7 +238,10 @@ Add a surface to the region's surface list.
 
 ### Class: `Plane`
 
-Defines a plane surface: Ax + By + Cz + D = 0
+Defines a half-space. **Convention:** `Plane(A, B, C, D)` represents the plane
+`A·x + B·y + C·z = D`, and a point is *inside* (``evaluate`` ≤ 0) when
+`A·x + B·y + C·z ≤ D`. Internally the normal is normalized and the stored
+offset is `-D/‖n‖`, so to describe the plane `z = 5` you write `Plane(0, 0, 1, 5)`.
 
 #### Constructor
 
@@ -244,15 +251,12 @@ Plane(A, B, C, D)
 
 **Parameters:**
 - `A, B, C` (float): Normal vector components (automatically normalized)
-- `D` (float): Plane offset
+- `D` (float): Plane offset (in the `A·x+B·y+C·z = D` sense)
 
 **Example:**
 ```python
-# Plane at z = 10 (pointing down)
-plane = Plane(0, 0, 1, 10)
-
-# Plane at x = -5 (pointing right)
-plane = Plane(-1, 0, 0, 5)
+plane = Plane(0, 0, 1, 5)    # the plane z = 5  (inside: z <= 5)
+plane = Plane(-1, 0, 0, 0)   # the plane x = 0  (inside: x >= 0)
 ```
 
 #### Methods
@@ -392,9 +396,35 @@ elastic_scattering(initial_energy, A, sampler, rng)
 
 **Physics:**
 Accounts for:
-- Target thermal motion (for E < 10 eV)
-- Center-of-mass to lab frame transformation
-- Isotropic scattering in CM frame
+- Target thermal motion (free-gas sampling for E < 10 eV)
+- Center-of-mass ↔ lab frame vector transformation
+- Isotropic scattering in the CM frame (the lab-frame forward bias it produces
+  is the genuine kinematic 2/(3A) effect, not an imposed anisotropy)
+
+> The transport loop uses this free-gas kernel **below 10 eV** (where target
+> motion and upscatter matter); **above 10 eV** it uses static-target kinematics
+> with the **tabulated ENDF angular distribution** (`get_elastic_mu`). The free
+> gas requires the target speed *and* its cosine relative to the neutron from the
+> same accepted sample — `VelocitySampler.sample_velocity(..., return_mu=True)`.
+
+---
+
+### Function: `inelastic_scattering(initial_energy, A, Q_value, sampler, rng)`
+
+Discrete-level inelastic scattering (two-body kinematics, isotropic in CM).
+Falls back to elastic if the available CM energy is below `Q_value`.
+
+**Returns:** `(E_prime, mu_cm, mu_lab)`.
+
+### Function: `sample_maxwellian(temperature_ev, rng)`
+
+Sample an energy from a Maxwellian (evaporation/fission) spectrum
+`f(E) ∝ √E·exp(-E/T)`. Used as the secondary-energy fallback for (n,xn)/continuum.
+
+### Function: `get_nuclear_temperature(energy, A)`
+
+Fermi-gas nuclear temperature `T = √(U/a)`, `a = A/8 MeV⁻¹`, for the evaporation
+model. Returns eV.
 
 ---
 
@@ -557,62 +587,89 @@ count_coordinates_in_boundary(coordinates, x_bounds, y_bounds, z_bounds)
 
 ## Module: `simulation`
 
-### Function: `simulate_single_particle`
+### Function: `simulate_single_particle(args)`
 
-Wrapper for multiprocessing particle simulation.
+Entry point mapped over a multiprocessing `Pool`. Simulates one source
+particle **and all of its secondary neutrons** (a bank/stack handles (n,2n),
+(n,3n) descendants).
+
+**`args` is a 10-tuple, in order:**
 
 ```python
-simulate_single_particle(args)
+(state, reader, mediums, A, N, sampler, region_bounds, track_coordinates, rng, settings)
 ```
 
-**Parameters:**
-- `args` (tuple): All arguments packed for multiprocessing
+| # | Item | Notes |
+|---|------|-------|
+| 1 | `state` (dict) | `x, y, z` (cm); `theta, phi` (rad); `energy` (eV); **`weight`** (float, e.g. 1.0); `has_interacted` (bool) |
+| 2 | `reader` | `CrossSectionReader` |
+| 3 | `mediums` | list of `Region` |
+| 4 | `A` | atomic weight ratio |
+| 5 | `N` | number density (atoms/cm³) |
+| 6 | `sampler` | `VelocitySampler` |
+| 7 | `region_bounds` | optional `(x_min,x_max,y_min,y_max,z_min,z_max)` detector box, or `None` |
+| 8 | `track_coordinates` | `bool` — record trajectory |
+| 9 | `rng` | `RNGHandler` |
+| 10 | `settings` | `Settings` — selects analog vs implicit-capture transport |
 
-**Returns:**
-- `dict`: Partial results including trajectory, tallies, final state
+> The `weight` field and the trailing `settings` element are **required** — they
+> were added when survival biasing and secondary-neutron banking were
+> introduced.
+
+**Returns** a result `dict`:
+
+| Key | Meaning |
+|-----|---------|
+| `result` | `"simulated"` |
+| `absorbed_weight` | total weight removed by capture |
+| `absorbed_coords` | list of `(x, y, z, weight_lost)` for mesh scoring |
+| `fissioned` | number of fission events |
+| `final_energy` | weighted-average escape energy (eV) |
+| `final_weight` | total weight that leaked out |
+| `region_detected` | `bool` — entered the detector box |
+| `trajectory` | `[(x,y,z), …]` if tracking, else `None` |
+
+The core loop lives in `run_particle_kernel(...)` (same arguments); it samples
+distance to collision, handles void/boundary crossings, applies the analog or
+implicit-capture collision kernel, and dispatches elastic/inelastic kinematics.
 
 ---
 
-### Function: `simulate_particle`
+## Module: `settings`
 
-Core particle transport simulation loop.
+### Class: `Settings`
 
 ```python
-simulate_particle(state, reader, mediums, A, N, sampler, 
-                 region_bounds=None, track_coordinates=False, rng=None)
+Settings(mode="shielding", particles=1000, batches=10)
 ```
 
-**Parameters:**
-- `state` (dict): Initial particle state
-  - `x, y, z`: Position (cm)
-  - `theta, phi`: Direction angles (radians)
-  - `energy`: Energy (eV)
-  - `has_interacted`: Interaction flag
-- `reader` (CrossSectionReader): Cross-section data
-- `mediums` (list): Region definitions
-- `A` (float): Mass ratio for scattering
-- `N` (float): Number density (atoms/cm³)
-- `sampler` (VelocitySampler): Thermal motion sampler
-- `region_bounds` (tuple): Optional (x_min, x_max, y_min, y_max, z_min, z_max)
-- `track_coordinates` (bool): Enable trajectory recording
-- `rng` (RNGHandler): Random number generator
+| `mode` | `use_implicit_capture` | `weight_cutoff` | `roulette_survival_prob` |
+|--------|------------------------|-----------------|--------------------------|
+| `"shielding"` | True | 1e-4 | 0.1 |
+| `"criticality"` | False (analog) | 0.0 | 1.0 |
 
-**Returns:**
-- `result` (str): "escaped", "absorbed", or "fission"
-- `absorbed_coordinates` (list): Absorption locations
-- `fission_coordinates` (list): Fission locations
-- `new_particles` (None): Reserved for future fission neutrons
-- `final_energy` (float): Final energy (eV)
-- `region_count` (int): Detection count
-- `trajectory` (list): [(x,y,z), ...] if tracking enabled
+**Attributes:** `mode`, `num_particles`, `batches`, `use_implicit_capture`,
+`weight_cutoff`, `roulette_survival_prob`.
 
-**Algorithm:**
-1. Determine current region
-2. Sample distance to interaction
-3. Check boundary crossings
-4. Process interaction (scatter/absorb/fission)
-5. Update particle state
-6. Repeat until terminal event
+---
+
+## Module: `mesh`
+
+### Class: `MeshTally`
+
+A regular Cartesian mesh that accumulates scored weight (e.g. energy/dose
+deposition) and exports to a legacy VTK file for ParaView.
+
+```python
+MeshTally(x_bounds, y_bounds, z_bounds, dims)
+```
+
+**Parameters:** `x_bounds`/`y_bounds`/`z_bounds` are `(min, max)` tuples;
+`dims` is `(nx, ny, nz)`.
+
+**Methods:**
+- `score(x, y, z, weight)` — add `weight` to the voxel containing the point.
+- `write_vtk(filename)` — write `STRUCTURED_POINTS` cell data to `filename`.
 
 ---
 
@@ -630,10 +687,11 @@ Tally()
 
 #### Attributes
 
-- `results` (dict): Event counts {"absorbed": int, "escaped": int}
-- `absorbed_coordinates` (list): Absorption positions
-- `energy_spectrum` (list): Final energies
-- `region_count` (int): Particles detected in specified region
+- `results` (dict): `{"absorbed": float, "escaped": int, "killed": int}`
+  (`absorbed` accumulates weight; `killed` counts roulette deaths)
+- `absorbed_coordinates` (list): `(x, y, z, weight)` absorption events
+- `energy_spectrum` (list): Per-particle escape energies
+- `region_count` (int): Particles detected in the optional detector box
 
 #### Methods
 
@@ -698,13 +756,15 @@ from src.vt_calc import VelocitySampler
 from src.simulation import simulate_single_particle
 from src.tally import Tally
 from src.random_number_generator import RNGHandler
+from src.settings import Settings
 from multiprocessing import Pool
+import numpy as np
 
 # 1. Initialize cross-section reader
 reader = CrossSectionReader("./endfb")
 
-# 2. Define material
-lead = Material("Lead", 11.35, 208, 2.5)
+# 2. Define material (single isotope per region)
+lead = Material("Lead", 11.35, 208, atomic_weight_ratio=207.2)
 
 # 3. Create velocity sampler
 sampler = VelocitySampler(mass=lead.kg_mass)
@@ -714,8 +774,8 @@ regions = [
     Region(
         surfaces=[
             Cylinder("z", 10, (0, 0, 0)),
-            Plane(0, 0, -1, 10),
-            Plane(0, 0, 1, 10)
+            Plane(0, 0, -1, 10),   # z >= -10
+            Plane(0, 0, 1, 10),    # z <= 10
         ],
         name="Shield",
         priority=1,
@@ -723,22 +783,24 @@ regions = [
     )
 ]
 
-# 5. Initialize particles
-rngs = [RNGHandler(seed=12345 + i) for i in range(100)]
+# 5. Settings + particles (note the `weight` field)
+settings = Settings(mode="shielding", particles=100)
+rngs = [RNGHandler(seed=12345 + i) for i in range(settings.num_particles)]
 particle_states = [
     {
-        "x": -15, "y": 0, "z": 0,
-        "theta": 0, "phi": 0,
+        "x": -15.0, "y": 0.0, "z": 0.0,
+        "theta": 0.0, "phi": 0.0,
         "energy": 1e6,
-        "has_interacted": False
+        "weight": 1.0,
+        "has_interacted": False,
     }
-    for rng in rngs
+    for _ in rngs
 ]
 
-# 6. Prepare simulation arguments
+# 6. Prepare simulation arguments (10-tuple, trailing `settings`)
 args = [
-    (state, reader, regions, lead.atomic_weight_ratio, 
-     lead.number_density, sampler, None, False, rng)
+    (state, reader, regions, lead.atomic_weight_ratio,
+     lead.number_density, sampler, None, False, rng, settings)
     for state, rng in zip(particle_states, rngs)
 ]
 
@@ -751,5 +813,5 @@ tally = Tally()
 for result in results:
     tally.merge_partial_results(result)
 
-tally.print_summary(100)
+tally.print_summary(settings.num_particles)
 ```

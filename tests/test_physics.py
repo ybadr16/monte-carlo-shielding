@@ -1,7 +1,6 @@
 import pytest
 import numpy as np
 from src.physics import (
-    calculate_mu_lab,
     calculate_E_cm_prime,
     calculate_E_prime,
     elastic_scattering,
@@ -110,6 +109,33 @@ class TestScatteringPhysics:
 
         # Average cosine should be positive (forward bias)
         assert np.mean(mu_labs) > 0.05
+
+
+class TestThermalUpscatter:
+    """Free-gas elastic scattering must allow upscatter at thermal energies so a
+    neutron population can equilibrate with the medium (regression guard for the
+    static-target bug that left thermal spectra too cold)."""
+
+    def test_upscatter_occurs_at_thermal(self):
+        mass = 12 * 1.674927471e-27
+        sampler = VelocitySampler(mass=mass, temperature=294)
+        rng = RNGHandler(seed=2024)
+        E0 = 0.0253  # eV, thermal
+        A = 12.0
+        outs = [elastic_scattering(E0, A, sampler, rng)[0] for _ in range(2000)]
+        # A meaningful fraction must GAIN energy — impossible with a static target.
+        frac_up = sum(1 for e in outs if e > E0) / len(outs)
+        assert frac_up > 0.1
+
+    def test_no_upscatter_when_fast(self):
+        # Well above the thermal regime the target is effectively at rest, so the
+        # neutron can only lose energy.
+        mass = 12 * 1.674927471e-27
+        sampler = VelocitySampler(mass=mass, temperature=294)
+        rng = RNGHandler(seed=7)
+        E0 = 1.0e6
+        outs = [elastic_scattering(E0, 12.0, sampler, rng)[0] for _ in range(500)]
+        assert all(e <= E0 * 1.0001 for e in outs)
 
 
 class TestDirectionSampling:

@@ -52,9 +52,11 @@ def _normalize_cdf(c):
 
 
 class SecondaryDistribution:
-    """
-    STRICT MODE: Raises Errors instead of falling back.
-    Use this to identify EXACTLY where Law 61 parsing fails.
+    """Secondary energy-angle reader for (n,xn)/continuum reactions.
+
+    Handles ENDF Law 61 (correlated), Law 4 (uncorrelated) and Kalbach-Mann.
+    Any layout it cannot parse leaves the sampler reporting success=False so the
+    caller falls back rather than aborting the worker.
     """
     def __init__(self, base_path, element, mt):
         self.base_path = base_path
@@ -68,7 +70,7 @@ class SecondaryDistribution:
         self.energy_out_data = None
         self.mu_data = None
 
-        self.ref_frame = "lab" # Default to Lab
+        self.ref_frame = "lab"
 
     def load(self):
         if self.loaded: return
@@ -81,34 +83,27 @@ class SecondaryDistribution:
         try:
             with h5py.File(file_path, 'r') as f:
                 root = f"neutron/{fname}" if f"neutron/{fname}" in f else fname
-                base = f"{root}/reactions/reaction_{self.mt:03}/product_0/distribution_0"
+                reaction = f"{root}/reactions/reaction_{self.mt:03}"
+                base = f"{reaction}/product_0/distribution_0"
                 if base not in f: return
                 grp = f[base]
 
                 if "type" in grp.attrs:
                     self.dist_type = grp.attrs["type"].decode('utf-8')
 
-                if "modifiers" in grp.attrs:
-                    # OpenMC often stores frame in modifiers
-                    mods = grp.attrs["modifiers"]
-                    # 1 = Lab, 2 = CM (Standard ENDF codes)
-                    if isinstance(mods, np.ndarray):
-                        if 2 in mods: self.ref_frame = "cm"
-                    elif mods == 2: self.ref_frame = "cm"
-                # ==========================================
-                # CASE A: CORRELATED (Law 61)
-                # ==========================================
+                # frame from the reaction group (center_of_mass: 1 = CM, 0 = lab)
+                if reaction in f and int(f[reaction].attrs.get("center_of_mass", 0)) == 1:
+                    self.ref_frame = "cm"
+
+                # correlated (Law 61): per-node energy_out blocks plus mu tables
                 if self.dist_type == "correlated":
                     self.incident_energy = grp["energy"][:]
 
-                    # STRICT OFFSET HUNTING
                     if "offsets" in grp: self.offsets = grp["offsets"][:]
                     elif "offsets" in grp["energy"].attrs: self.offsets = grp["energy"].attrs["offsets"]
                     elif "energy_out" in grp and "offsets" in grp["energy_out"].attrs:
                          self.offsets = grp["energy_out"].attrs["offsets"]
                     else:
-                        # Don't fail silently. If we can't find offsets for Law 61, we can't simulate.
-                        print(f"⚠️ [WARNING] No offsets found for {self.element} MT{self.mt}")
                         return
 
                     self.energy_out_data = grp["energy_out"][:]
@@ -116,9 +111,7 @@ class SecondaryDistribution:
 
                     self.loaded = True
 
-                # ==========================================
-                # CASE B: UNCORRELATED
-                # ==========================================
+                # uncorrelated (Law 4) and Kalbach-Mann: a single distribution block
                 else:
                     if "energy" in grp and "distribution" in grp:
                         self.incident_energy = grp["energy"][:]
@@ -131,17 +124,17 @@ class SecondaryDistribution:
 
                         self.loaded = True
 
-        except Exception as e:
-            print(f"Error loading {self.element}: {e}")
+        except Exception:
+            return
 
     def sample_energy(self, E_in, rng):
-        """Standard sampling (Law 4)."""
+        """Law 4 (uncorrelated) outgoing energy, interpolated between incident nodes."""
         if not self.loaded or self.dist_type == "correlated": return None
-        # ... (Same as before, uncorrelated code is likely fine given 0.2% errors elsewhere)
         idx = np.searchsorted(self.incident_energy, E_in) - 1
         idx = max(0, min(idx, len(self.incident_energy) - 2))
         E_l, E_h = self.incident_energy[idx], self.incident_energy[idx+1]
         f = 0.0 if E_h == E_l else (E_in - E_l) / (E_h - E_l)
+        f = max(0.0, min(1.0, f))   # clamp to the grid
         return (1 - f) * self._sample_uncorr(idx, rng) + f * self._sample_uncorr(idx+1, rng)
 
     def _sample_uncorr(self, idx, rng):
@@ -150,37 +143,51 @@ class SecondaryDistribution:
         if start >= end: return 0.0
         return np.interp(rng.random(), self.distribution_data[2, start:end], self.distribution_data[0, start:end])
 
+    def _block_span(self, data, i):
+        """[start, end) column slice of the i-th incident-energy block."""
+        start = self.offsets[i]
+        end = data.shape[1] if i >= len(self.offsets) - 1 else self.offsets[i + 1]
+        return start, end
+
+    def _unit_base(self, E_sampled, block_E_out, idx, f, data):
+        """Unit-base interpolation: rescale E_sampled onto the [E_min, E_max]
+        interpolated between the two bracketing incident nodes, so the tail
+        endpoint tracks the incident energy."""
+        e_min_sel, e_max_sel = block_E_out[0], block_E_out[-1]
+        span_sel = e_max_sel - e_min_sel
+        frac = 0.0 if span_sel <= 0 else (E_sampled - e_min_sel) / span_sel
+
+        s_lo, e_lo = self._block_span(data, idx)
+        s_hi, e_hi = self._block_span(data, idx + 1)
+        lo_min, lo_max = data[0, s_lo], data[0, e_lo - 1]
+        hi_min, hi_max = data[0, s_hi], data[0, e_hi - 1]
+        e_min = lo_min + f * (hi_min - lo_min)
+        e_max = lo_max + f * (hi_max - lo_max)
+        return e_min + frac * (e_max - e_min)
+
     def sample_correlated(self, E_in, rng):
-        """
-        STRICT Correlated Sampling. Raises Exceptions on Data Failure.
-        """
-        # --- RESTORED SAFETY CHECK ---
-        # If the data is Uncorrelated (e.g. Pb208), we must return False
-        # so the simulation knows to use the fallback or other methods.
-        if not self.loaded or self.dist_type != "correlated":
+        """Law 61 (E_out, mu, True), or (0, 0, False) when the layout is uninterpretable."""
+        if not self.loaded:
+            return 0.0, 0.0, False
+        if self.dist_type == "kalbach-mann":
+            return self._sample_kalbach(E_in, rng)
+        if self.dist_type != "correlated":
+            return 0.0, 0.0, False
+        if self.offsets is None:
             return 0.0, 0.0, False
 
-        # 1. Bin Selection
         idx = np.searchsorted(self.incident_energy, E_in) - 1
         idx = max(0, min(idx, len(self.incident_energy) - 2))
         E_l, E_h = self.incident_energy[idx], self.incident_energy[idx+1]
         f = 0.0 if E_h == E_l else (E_in - E_l) / (E_h - E_l)
+        f = max(0.0, min(1.0, f))   # clamp to the grid
         selected_idx = idx if rng.random() > f else idx + 1
 
-        # 2. Locate Energy Block
-        if self.offsets is None:
-             raise ValueError(f"CRITICAL: Offsets are None for {self.element} in sample_correlated")
-
-        start = self.offsets[selected_idx]
-        if selected_idx >= len(self.offsets) - 1:
-            end = self.energy_out_data.shape[1]
-        else:
-            end = self.offsets[selected_idx+1]
-
+        # sample the outgoing-energy shape from the chosen incident node
+        start, end = self._block_span(self.energy_out_data, selected_idx)
         if start >= end:
-             raise ValueError(f"Empty Energy Block: Start {start} >= End {end} (E_in={E_in:.2e})")
+            return 0.0, 0.0, False
 
-        # 3. Sample Energy
         block_E_out = self.energy_out_data[0, start:end]
         block_CDF   = self.energy_out_data[2, start:end]
 
@@ -196,72 +203,93 @@ class SecondaryDistribution:
             if abs(c1 - c0) < 1e-14: E_sampled = e1
             else: E_sampled = e0 + (r_E - c0)/(c1 - c0) * (e1 - e0)
 
-        # 4. STRICT ANGLE DETECTION
-        current_global_idx = start + k_local
+        E_sampled = self._unit_base(E_sampled, block_E_out, idx, f, self.energy_out_data)
 
+        # mu offset lives in row 4 (or row 3 in older layouts); <= 10 means none
+        current_global_idx = start + k_local
         val_row3 = int(self.energy_out_data[3, current_global_idx])
         val_row4 = int(self.energy_out_data[4, current_global_idx])
 
         mu_offset = 0
         mu_len = 0
-        used_row4_as_offset = False
-
         if val_row4 > 10:
             mu_offset = val_row4
-            used_row4_as_offset = True
             if current_global_idx < self.energy_out_data.shape[1] - 1:
-                next_val = int(self.energy_out_data[4, current_global_idx + 1])
-                mu_len = next_val - mu_offset
+                mu_len = int(self.energy_out_data[4, current_global_idx + 1]) - mu_offset
             else:
                 mu_len = self.mu_data.shape[1] - mu_offset if self.mu_data is not None else 0
-
         elif val_row3 > 10:
             mu_offset = val_row3
-            used_row4_as_offset = False
             if current_global_idx < self.energy_out_data.shape[1] - 1:
-                next_val = int(self.energy_out_data[3, current_global_idx + 1])
-                mu_len = next_val - mu_offset
+                mu_len = int(self.energy_out_data[3, current_global_idx + 1]) - mu_offset
             else:
                 mu_len = self.mu_data.shape[1] - mu_offset if self.mu_data is not None else 0
-
         else:
-            debug_info = f"""
-            ❌ PARSING FAILURE for {self.element} MT{self.mt}
-            E_in: {E_in:.2e} | E_out: {E_sampled:.2e}
-            Global Index: {current_global_idx}
-            Row 3 Value: {val_row3}
-            Row 4 Value: {val_row4}
-            """
-            raise ValueError(debug_info)
+            return 0.0, 0.0, False
 
-        # 5. STRICT MU VALIDATION
-        if self.mu_data is None:
-             raise ValueError("CRITICAL: 'mu' dataset is None but Law 61 was requested.")
-
-        if mu_len <= 0:
-             raise ValueError(f"Invalid Mu Length {mu_len} at Global Index {current_global_idx}")
+        if self.mu_data is None or mu_len <= 0:
+            return 0.0, 0.0, False
 
         mu_vals = self.mu_data[0, mu_offset : mu_offset + mu_len]
         mu_cdf  = self.mu_data[2, mu_offset : mu_offset + mu_len]
 
-        if len(mu_vals) > 0:
-            last_val = mu_cdf[-1]
-            if abs(last_val - 1.0) > 0.01:
-                debug_info = f"""
-                ❌ INVALID CDF DETECTED for {self.element}
-                Used Row 4 as Offset? {used_row4_as_offset}
-                Offset: {mu_offset} | Length: {mu_len}
-                CDF Last Value: {last_val}
-                """
-                raise ValueError(debug_info)
-
+        if len(mu_vals) == 0:
+            return 0.0, 0.0, False
+        if abs(mu_cdf[-1] - 1.0) > 0.01:   # malformed CDF
+            return 0.0, 0.0, False
         if len(mu_vals) == 1:
             return E_sampled, mu_vals[0], True
 
-        if len(mu_vals) == 0:
-            raise ValueError(f"Empty Mu Block (Len=0) at Offset {mu_offset}")
-
         return E_sampled, np.interp(rng.random(), mu_cdf, mu_vals), True
+
+    def _sample_kalbach(self, E_in, rng):
+        """Kalbach-Mann (E_out, mu). Block rows are [E_out, pdf, cdf, r, a];
+        energy from the cdf, cosine from f(mu) ~ cosh(a mu) + r sinh(a mu)."""
+        dist = self.distribution_data
+        if dist is None or self.offsets is None or dist.shape[0] < 5:
+            return 0.0, 0.0, False
+
+        idx = np.searchsorted(self.incident_energy, E_in) - 1
+        idx = max(0, min(idx, len(self.incident_energy) - 2))
+        E_l, E_h = self.incident_energy[idx], self.incident_energy[idx + 1]
+        f = 0.0 if E_h == E_l else (E_in - E_l) / (E_h - E_l)
+        f = max(0.0, min(1.0, f))   # clamp to the grid
+        sel = idx if rng.random() > f else idx + 1
+
+        start, end = self._block_span(dist, sel)
+        if start >= end:
+            return 0.0, 0.0, False
+
+        E_out = dist[0, start:end]
+        cdf   = dist[2, start:end]
+        r_arr = dist[3, start:end]
+        a_arr = dist[4, start:end]
+
+        xi = rng.random()
+        k = np.searchsorted(cdf, xi)
+        k = max(0, min(k, len(E_out) - 1))
+        if k == 0:
+            E_s, r, a = E_out[0], r_arr[0], a_arr[0]
+        else:
+            c0, c1 = cdf[k - 1], cdf[k]
+            e0, e1 = E_out[k - 1], E_out[k]
+            E_s = e1 if abs(c1 - c0) < 1e-14 else e0 + (xi - c0) / (c1 - c0) * (e1 - e0)
+            r, a = r_arr[k], a_arr[k]
+
+        # Unit-base interpolation of the outgoing energy between incident grids.
+        E_s = self._unit_base(E_s, E_out, idx, f, dist)
+        return E_s, self._kalbach_mu(float(a), float(r), rng), True
+
+    @staticmethod
+    def _kalbach_mu(a, r, rng):
+        """Sample the emission cosine from the Kalbach angular law."""
+        a = min(max(a, 1e-6), 700.0)   # guard against overflow / a=0
+        if rng.random() <= r:
+            xi = rng.random()
+            return np.log(xi * np.exp(a) + (1.0 - xi) * np.exp(-a)) / a
+        T = (2.0 * rng.random() - 1.0) * np.sinh(a)
+        return np.log(T + np.sqrt(T * T + 1.0)) / a
+
 
 class CrossSectionReader:
     def __init__(self, base_path: str, temperature: str = "294K"):
@@ -424,21 +452,30 @@ class CrossSectionReader:
             self.secondary_dists[key] = dist
         return self.secondary_dists[key].sample_correlated(energy, rng)
 
+    def get_secondary_frame(self, element, mt):
+        """Reference frame of an (n,xn) secondary distribution: 'cm' or 'lab'."""
+        element_map = {"C": "C0", "Graphite": "C0", "Be": "Be9", "Al": "Al27", "Fe": "Fe56", "Pb": "Pb208"}
+        actual = element_map.get(element, element)
+        key = (actual, mt)
+        if key not in self.secondary_dists:
+            dist = SecondaryDistribution(self.base_path, actual, mt)
+            dist.load()
+            self.secondary_dists[key] = dist
+        return self.secondary_dists[key].ref_frame
+
     def get_cross_sections(self, element, energy, sampler, N, A):
         from .physics import calculate_E_cm_prime
         if energy < 10.0: lookup_energy = calculate_E_cm_prime(energy, A, sampler)
         else: lookup_energy = energy
 
-        # 1. Elastic Scattering
+        # elastic
         mic_el = self.get_cross_section(element, 2, lookup_energy)
         Sigma_el = self.calculate_macroscopic_xs(mic_el, N)
 
-        # 2. Inelastic Scattering (Now strictly neutron-emitting)
+        # neutron-emitting inelastic
         Sigma_in, _ = self.get_inelastic_components(element, energy, N)
 
-        # 3. Capture / Absorption (The Iron Fix)
-        # Sum ALL absorption channels:
-        # 102 (n,g), 103 (n,p), 104 (n,d), 105 (n,t), 106 (n,He3), 107 (n,a)
+        # absorption: 102 (n,g), 103 (n,p), 104 (n,d), 105 (n,t), 106 (n,He3), 107 (n,a)
         mic_cap_total = 0.0
         absorption_mts = [102, 103, 104, 105, 106, 107]
 
@@ -448,7 +485,7 @@ class CrossSectionReader:
 
         Sigma_cap = self.calculate_macroscopic_xs(mic_cap_total, N)
 
-        # 4. Fission
+        # fission
         mic_fis = self.get_cross_section(element, 18, energy)
         Sigma_fis = self.calculate_macroscopic_xs(mic_fis, N)
 

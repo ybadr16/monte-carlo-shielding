@@ -49,37 +49,25 @@ class AngularDistribution:
 
                     self.loaded = True
 
-        except Exception as e:
-            print(f"Warning: Failed to load angular data: {e}")
+        except Exception:
+            # Leave unloaded; sample_mu() then falls back to isotropic.
+            return
 
     def sample_mu(self, energy_eV, rng):
-        """
-        Samples a scattering cosine (mu) for a given incident energy.
-        Returns: mu_cm (Center of Mass frame)
-        """
+        """Sample a CM scattering cosine at the given incident energy."""
         if not self.loaded:
-            # Fallback to Isotropic if data missing
-            return 2 * rng.random() - 1
+            return 2 * rng.random() - 1   # isotropic if no data
 
-        # 1. Find Energy Bins (Binary Search)
-        # Find i such that E[i] <= E < E[i+1]
         idx = np.searchsorted(self.energy_grid, energy_eV) - 1
-
-        # Clamp to range
         idx = max(0, min(idx, len(self.energy_grid) - 2))
 
-        # 2. Get Interpolation Factor f
         E_low = self.energy_grid[idx]
         E_high = self.energy_grid[idx+1]
         f = (energy_eV - E_low) / (E_high - E_low)
 
-        # 3. Sample mu at E_low
+        # sample mu at each bracketing energy, then interpolate the result
         mu_low = self._sample_from_block(idx, rng)
-
-        # 4. Sample mu at E_high
         mu_high = self._sample_from_block(idx + 1, rng)
-
-        # 5. Interpolate (Standard linear interpolation of the sampled value)
         return (1 - f) * mu_low + f * mu_high
 
     def _sample_from_block(self, energy_idx, rng):

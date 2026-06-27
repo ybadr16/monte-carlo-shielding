@@ -67,7 +67,6 @@ class Plane:
         self.D = -D / norm  # Adjusted for normalized normal
 
     def evaluate(self, x, y, z):
-        #print(self.A * x + self.B * y + self.C * z - self.D)
         return self.A * x + self.B * y + self.C * z + self.D
 
     def nearest_surface_method(self, x, y, z, u, v, w):
