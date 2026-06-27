@@ -21,6 +21,7 @@ PyNeut implements continuous-energy neutron physics, including:
 - Multi-region constructive-solid-geometry (planes, spheres, cylinders, boxes, voids, priorities)
 - Single-isotope or multi-isotope material mixtures per region (reacting isotope sampled per collision)
 - Analog and survival-biased (implicit-capture + roulette) transport
+- k-eigenvalue (criticality) via a fission-source power iteration with ν and a Watt χ spectrum
 - Parallel particle tracking via `multiprocessing`, mesh tallies (VTK) and trajectory recording
 
 ## Requirements
@@ -101,13 +102,14 @@ or [NNDC ENDF/B-VIII](https://www.nndc.bnl.gov/endf/).
 src/
 ├── cross_section_read.py   # ENDF reader: XS, angular & secondary-energy distributions
 ├── angular_distribution.py # Tabulated elastic (MT=2) angular sampling
-├── material.py             # Material number density & atom mass
+├── material.py             # Material number density, atom mass, Nuclide & mixtures
 ├── medium.py               # CSG primitives (Region, Plane, Cylinder, Sphere, Box)
 ├── geometry.py             # Ray–surface boundary search
-├── physics.py              # Elastic/inelastic kinematics, evaporation, anisotropy
+├── physics.py              # Elastic/inelastic kinematics, evaporation, Watt χ
 ├── vt_calc.py              # Free-gas target velocity sampling
 ├── settings.py             # Transport mode (analog vs implicit capture)
-├── simulation.py           # Transport loop + secondary-neutron bank
+├── simulation.py           # Transport loop + secondary-neutron & fission bank
+├── criticality.py          # k-eigenvalue fission-source power iteration
 ├── tally.py                # Scalar results accumulation
 ├── mesh.py                 # Cartesian mesh tally → VTK
 └── random_number_generator.py
@@ -156,7 +158,25 @@ Maxwellian fallback (which fires **0 %** of the time).
 
 Also: **analytic benchmarks 13/13 PASS** (Beer–Lambert attenuation; elastic
 [α,1] / ξ within 0.3σ), the **cross-section reader matches OpenMC to 0.000 %**
-on every channel, and the `pytest` suite has **117 passing** tests.
+on every channel, and the `pytest` suite has **131 passing** tests.
+
+### Criticality (k-eigenvalue) vs OpenMC
+
+`Validation/OpenMC_Comparison/validate_keff.py` compares PyNeut's fission-source
+power iteration against OpenMC's `eigenvalue` mode on bare U235 metal spheres
+(same density and data, matched geometry, graded by the same k_eff z-score):
+
+| Sphere R (cm) | PyNeut k_eff | OpenMC k_eff | z | Status |
+|--------------:|-------------:|-------------:|--:|:------:|
+| 6.0 (subcritical) | 0.7476 ± 0.0040 | 0.7351 ± 0.0015 | 2.9 | WARNING |
+| 8.7 (≈ critical) | 1.0257 ± 0.0040 | 1.0195 ± 0.0023 | 1.3 | OK |
+| 11.0 (supercritical) | 1.2273 ± 0.0048 | 1.2272 ± 0.0026 | 0.0 | OK |
+
+PyNeut reproduces the **~8.7 cm bare-U235 critical radius** (k ≈ 1.02) and agrees
+with OpenMC to within statistics near and above critical. The small high-leakage
+bias at R = 6 cm is consistent with PyNeut's **Watt χ** approximation (vs OpenMC's
+tabulated ENDF fission spectrum), whose spectrum-shape effect is largest where
+leakage dominates.
 
 ## Physics Models
 
@@ -170,7 +190,10 @@ on every channel, and the `pytest` suite has **117 passing** tests.
   grids, and CM-frame reactions are boosted to the lab frame; the emitted
   neutrons are sampled independently and banked/tracked.
 - **Absorption** — MT 102/103/104/105/106/107 summed.
-- **Fission** — cross section scored as absorption; no fission neutrons yet.
+- **Fission** — MT 18; in analog `criticality` mode it emits ν (tabulated total
+  ν̄) prompt neutrons per fission with a Watt χ spectrum into the next
+  generation's fission bank, enabling k_eff. In `shielding` mode the fission
+  cross section is still scored as absorption.
 - **Cross sections** — ENDF/B-VIII, lin–lin interpolation (verified vs OpenMC).
 
 ## Limitations
@@ -193,7 +216,8 @@ on every channel, and the `pytest` suite has **117 passing** tests.
 - Material mixtures are supported (multiple isotopes per region via
   `Region(composition=[Nuclide, …])` or `Material.mixture`); there is no built-in
   natural-abundance database, so isotopes are specified explicitly.
-- No fission multiplication / k-eigenvalue (fission is absorption-only).
+- k-eigenvalue uses a Watt χ spectrum (not the tabulated ENDF fission spectrum)
+  and total ν̄ (prompt + delayed lumped, no delayed-neutron time kinetics).
 - Charged-particle and photon products are not transported; neutrons only.
 - Source states are built by hand (no built-in spectrum/spatial sampler).
 - Geometry limited to planes, spheres and axis-aligned cylinders/boxes.
@@ -201,8 +225,9 @@ on every channel, and the `pytest` suite has **117 passing** tests.
 ## Testing
 
 ```bash
-pytest -q                                              # 117 unit tests
+pytest -q                                              # 131 unit tests
 cd Validation/OpenMC_Comparison && python run_all.py   # PyNeut vs OpenMC
+python Validation/OpenMC_Comparison/validate_keff.py   # k-eigenvalue vs OpenMC
 python Validation/analytic_benchmarks.py               # exact analytic checks
 ```
 
@@ -224,10 +249,11 @@ Ordered by engineering leverage (see `docs/index.md` for the full rationale):
    three-dimensional Manim scene, so geometry changes no longer require
    hand-editing the animation script; move the export to a binary container as
    particle counts grow.
-2. **Criticality (k-eigenvalue) and a fission-neutron source** — emit ν neutrons
-   per fission with a Watt χ spectrum and iterate a fission bank to estimate
-   k_eff (MT = 18 is currently absorption only); the secondary bank and
-   batch-statistics machinery already exist.
+2. **Criticality refinements** — k-eigenvalue is now implemented (`criticality.py`:
+   ν-weighted fission bank, Watt χ, generation power iteration). Remaining work:
+   read the tabulated ENDF χ instead of the Watt approximation, separate prompt
+   and delayed ν (time kinetics / β_eff), and validate more fissile isotopes and
+   ICSBEP benchmarks beyond bare U235 spheres.
 3. **Performance** — profile first (the boundary search and cross-section lookups
    are the suspected hot paths), then take the cheap wins (local-variable state,
    `multiprocessing` chunking) before any Numba/`njit` work, which would demand

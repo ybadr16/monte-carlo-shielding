@@ -16,6 +16,7 @@ are directly comparable and the numbers are reproducible on any machine with
 | `validate_thermal.py` | Thermal / epithermal regime (B10, Cd112, C12) — probes the part of phase space PyNeut is *least* validated in. |
 | `validate_xs.py` | Cross-section interpolation check — PyNeut's reader vs `openmc.data.IncidentNeutron.from_hdf5`, channel by channel. No `cross_sections.xml` needed. |
 | `run_all.py` | Master runner. Executes every isotope module + the XS check, prints a summary table, and writes `validation_results.csv`. |
+| `validate_keff.py` | **k-eigenvalue** check — PyNeut's fission-source power iteration vs OpenMC's `eigenvalue` mode on bare U235 metal spheres, graded by the same k_eff z-score. |
 | `main_benchmark.py` | Minimal standalone PyNeut-only Pb208 sphere benchmark. |
 | `../analytic_benchmarks.py` | PyNeut vs **exact analytic** results (no OpenMC): Beer–Lambert attenuation and elastic [α,1] / ξ kinematics. |
 
@@ -32,6 +33,9 @@ python run_all.py --n 2000 --isotopes Pb208,Fe56
 
 # Cross-section reader check only
 python validate_xs.py
+
+# k-eigenvalue (bare U235 spheres) vs OpenMC eigenvalue mode
+python validate_keff.py --n 1500 --gens 80 --inactive 20
 
 # Exact analytic benchmarks (no OpenMC needed)
 python ../analytic_benchmarks.py
