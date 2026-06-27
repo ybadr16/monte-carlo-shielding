@@ -29,6 +29,7 @@ user-defined materials and geometries, driven by ENDF/B-VIII nuclear data.
 ✅ Inelastic scattering — discrete levels (MT 51–90) and continuum / multiplication (n,2n), (n,3n)
 ✅ Multi-channel absorption (n,γ, n,p, n,d, n,t, n,³He, n,α)
 ✅ Constructive-solid-geometry: planes, spheres, cylinders, boxes, nested regions, voids, priorities
+✅ Single-isotope **or multi-isotope material mixtures** per region (isotope sampled per collision)
 ✅ Analog **and** survival-biased (implicit-capture + roulette) transport modes
 ✅ Parallel particle tracking via `multiprocessing`
 ✅ Cartesian mesh tally → VTK (ParaView) and optional trajectory recording
@@ -290,7 +291,11 @@ validation above.
   is now correct (validated, with upscatter), but molecular/crystalline binding
   in real moderators (water, graphite) is not modelled — so thermal results in
   bound media are approximate even though the free-gas physics is right.
-- **One isotope per region** — no material mixtures, compounds or natural elements.
+- **Material mixtures are supported** — a region may carry several isotopes via
+  `Region(composition=[Nuclide, …])` or the `Material.mixture` helper, and the
+  kernel samples the reacting isotope per collision. There is no built-in
+  natural-abundance database yet, so isotopes are listed explicitly with their
+  number densities or atom fractions.
 - **No fission multiplication / k-eigenvalue** — fission is absorption-only; the
   `criticality` settings mode exists but does not yet produce fission neutrons.
 - **Charged-particle channels** (n,p), (n,α) … remove the neutron but do not
@@ -382,11 +387,12 @@ the same data-flattening effort as a full array-based (event-vectorised)
 transport rewrite — and the latter is the more defensible target should
 throughput ever become the binding constraint.
 
-**4. Physics and transport breadth.** Each region is presently restricted to a
-single isotope, so material mixtures and natural-abundance elements are the
-largest physics gap, since realistic media (light water, stainless steel, UO₂)
-cannot otherwise be represented. Further items, in rough order of value: bound
-thermal scattering through S(α,β) data (the free-gas model is validated but omits
+**4. Physics and transport breadth.** A region may now carry a multi-isotope
+`composition`, so material mixtures (light water, stainless steel, UO₂) are
+representable; the remaining convenience gap is a natural-abundance database so
+elements need not be entered isotope-by-isotope. Further items, in rough order of
+value: bound thermal scattering through S(α,β) data (the free-gas model is
+validated but omits
 molecular and crystalline binding); a multi-temperature library with Doppler
 broadening (only 294 K is loaded); a track-length flux estimator to replace the
 present collision estimator and lower the tally variance; built-in source
