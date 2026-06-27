@@ -86,6 +86,39 @@ def _inc(counters, key, n=1):
         counters[key] = counters.get(key, 0) + n
 
 
+class _Iso:
+    """Single-isotope composition entry for the backward-compatible path.
+
+    Mirrors the attribute interface of `material.Nuclide` so the kernel can
+    treat the legacy `element` + global A/N/sampler exactly like one mixture
+    component.
+    """
+    __slots__ = ("element", "number_density", "atomic_weight_ratio", "sampler")
+
+    def __init__(self, element, number_density, atomic_weight_ratio, sampler):
+        self.element = element
+        self.number_density = number_density
+        self.atomic_weight_ratio = atomic_weight_ratio
+        self.sampler = sampler
+
+
+def _select_isotope(iso_data, weight_fn, total, rng):
+    """Pick one (iso, s_el, s_in, s_cap, s_fis) entry weighted by `weight_fn`.
+
+    With a single isotope no random number is drawn, so single-material runs
+    keep their exact RNG stream (and byte-identical results vs. the legacy path).
+    """
+    if len(iso_data) == 1:
+        return iso_data[0]
+    roll = rng.random() * total
+    acc = 0.0
+    for entry in iso_data:
+        acc += weight_fn(entry)
+        if roll <= acc:
+            return entry
+    return iso_data[-1]
+
+
 def _cm_to_lab(E_cm, mu_cm, E_in, A):
     """CM-to-lab boost of an emitted neutron, mu_cm measured from the incident direction.
 
@@ -174,10 +207,28 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                 state["z"] += epsilon * w
             continue
 
-        sigma_s, sigma_in, sigma_a, sigma_f, Sigma_t = reader.get_cross_sections(
-            current_medium.element, state["energy"], sampler, N, A
-        )
-        total_scatter_xs = sigma_s + sigma_in
+        # per-isotope macroscopic cross sections for this medium; an explicit
+        # mixture uses medium.composition, otherwise fall back to the single
+        # isotope carried by the global element/A/N/sampler (legacy behaviour)
+        composition = current_medium.composition or [
+            _Iso(current_medium.element, N, A, sampler)
+        ]
+
+        iso_data = []
+        Sig_el = Sig_in = Sig_cap = Sig_fis = 0.0
+        for iso in composition:
+            s_el, s_in, s_cap, s_fis, _ = reader.get_cross_sections(
+                iso.element, state["energy"], iso.sampler,
+                iso.number_density, iso.atomic_weight_ratio
+            )
+            iso_data.append((iso, s_el, s_in, s_cap, s_fis))
+            Sig_el += s_el
+            Sig_in += s_in
+            Sig_cap += s_cap
+            Sig_fis += s_fis
+
+        Sig_scatter = Sig_el + Sig_in
+        Sigma_t = Sig_scatter + Sig_cap + Sig_fis
 
         # distance to next collision
         if Sigma_t <= 0:
@@ -209,8 +260,8 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                     return "killed", children, trajectory, absorbed_weight_local, absorbed_coords_local
 
             if Sigma_t > 0:
-                p_absorb = (sigma_a + sigma_f) / Sigma_t
-                p_scatter = total_scatter_xs / Sigma_t
+                p_absorb = (Sig_cap + Sig_fis) / Sigma_t
+                p_scatter = Sig_scatter / Sigma_t
             else:
                 p_absorb = 0.0
                 p_scatter = 1.0
@@ -224,11 +275,23 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
             if state["weight"] <= 0:
                  return "killed", children, trajectory, absorbed_weight_local, absorbed_coords_local
 
+            # survives as a scatter: pick which isotope it scatters off,
+            # weighted by each isotope's scattering macroscopic cross section
+            iso, s_el_i, s_in_i, _, _ = _select_isotope(
+                iso_data, lambda e: e[1] + e[2], Sig_scatter, rng
+            )
+
         else:
-            # analog: elastic / inelastic / capture by relative probability
+            # analog: pick the collision isotope (weighted by total XS), then
+            # elastic / inelastic / capture within that isotope
+            iso, s_el_i, s_in_i, s_cap_i, s_fis_i = _select_isotope(
+                iso_data, lambda e: e[1] + e[2] + e[3] + e[4], Sigma_t, rng
+            )
+            s_tot_i = s_el_i + s_in_i + s_cap_i + s_fis_i
+
             interaction_prob = rng.random()
-            p_scatter_el = sigma_s / Sigma_t if Sigma_t > 0 else 0
-            p_scatter_in = sigma_in / Sigma_t if Sigma_t > 0 else 0
+            p_scatter_el = s_el_i / s_tot_i if s_tot_i > 0 else 0
+            p_scatter_in = s_in_i / s_tot_i if s_tot_i > 0 else 0
 
             if interaction_prob < p_scatter_el:
                 pass
@@ -239,16 +302,22 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                 absorbed_coords_local.append((state["x"], state["y"], state["z"], state["weight"]))
                 return "absorbed", children, trajectory, absorbed_weight_local, absorbed_coords_local
 
-        if (sigma_s + sigma_in) > 0:
-            prob_inelastic = sigma_in / (sigma_s + sigma_in)
+        # the selected isotope drives every downstream lookup / kinematic
+        element_i = iso.element
+        A_i = iso.atomic_weight_ratio
+        sampler_i = iso.sampler
+        N_i = iso.number_density
+
+        if (s_el_i + s_in_i) > 0:
+            prob_inelastic = s_in_i / (s_el_i + s_in_i)
         else:
             prob_inelastic = 0.0
 
         if rng.random() < prob_inelastic:
-            _, components = reader.get_inelastic_components(current_medium.element, state["energy"], N)
+            _, components = reader.get_inelastic_components(element_i, state["energy"], N_i)
 
             if not components:
-                E_prime, mu_cm, mu_lab = elastic_scattering(state["energy"], A, sampler, rng)
+                E_prime, mu_cm, mu_lab = elastic_scattering(state["energy"], A_i, sampler_i, rng)
             else:
                 xs_values = [c[1] for c in components]
                 total_in_xs = sum(xs_values)
@@ -282,12 +351,12 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
 
                     for _ in range(10):
                         E_try, mu_try, success = reader.get_secondary_correlated_sample(
-                            current_medium.element, selected_mt, E_in_snapshot, rng
+                            element_i, selected_mt, E_in_snapshot, rng
                         )
                         src = "law61"
 
                         if not success:
-                            E_uncorr = reader.get_secondary_energy(current_medium.element, selected_mt, E_in_snapshot, rng)
+                            E_uncorr = reader.get_secondary_energy(element_i, selected_mt, E_in_snapshot, rng)
                             if E_uncorr is not None:
                                 E_try = E_uncorr
                                 mu_try = None
@@ -303,7 +372,7 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                                 break
 
                     if not valid_sample:
-                        T_nuc = get_nuclear_temperature(E_avail, A)
+                        T_nuc = get_nuclear_temperature(E_avail, A_i)
                         E_prime = sample_maxwellian(T_nuc, rng)
                         E_prime = min(E_prime, E_avail)
                         mu_lab = 2 * rng.random() - 1
@@ -313,8 +382,8 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                     # the energy budget is checked in the native frame, so boost
                     # to the lab frame afterwards for CM-frame data
                     if parent_source != "maxwellian" and reader.get_secondary_frame(
-                            current_medium.element, selected_mt) == "cm":
-                        E_prime, mu_lab = _cm_to_lab(E_prime, mu_lab, E_in_snapshot, A)
+                            element_i, selected_mt) == "cm":
+                        E_prime, mu_lab = _cm_to_lab(E_prime, mu_lab, E_in_snapshot, A_i)
 
                     u, v, w, state["phi"] = sample_new_direction_cosines(u_in, v_in, w_in, mu_lab, rng)
                     state["theta"] = np.arccos(w)
@@ -327,8 +396,8 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                         _inc(counters, "n3n_events")
                     for _ in range(n_children):
                         child_E, child_mu, child_source = _emit_secondary_neutron(
-                            reader, current_medium.element, selected_mt,
-                            E_in_snapshot, E_avail, A, rng)
+                            reader, element_i, selected_mt,
+                            E_in_snapshot, E_avail, A_i, rng)
                         _inc(counters, f"child_{child_source}")
 
                         child = state.copy()
@@ -346,7 +415,7 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
                 else:
                     # discrete levels, MT 51-90
                     _inc(counters, "discrete_inelastic_events")
-                    E_prime, mu_cm, mu_lab = inelastic_scattering(state["energy"], A, selected_q, sampler, rng)
+                    E_prime, mu_cm, mu_lab = inelastic_scattering(state["energy"], A_i, selected_q, sampler_i, rng)
                     u, v, w, state["phi"] = sample_new_direction_cosines(u, v, w, mu_lab, rng)
                     state["theta"] = np.arccos(w)
                     state["energy"] = E_prime
@@ -355,16 +424,16 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
             if state["energy"] < THERMAL_KINEMATICS_CUTOFF:
                 # free-gas kinematics below the cutoff: the moving target lets the
                 # neutron upscatter and equilibrate to the medium temperature
-                E_prime, _, mu_lab = elastic_scattering(state["energy"], A, sampler, rng)
+                E_prime, _, mu_lab = elastic_scattering(state["energy"], A_i, sampler_i, rng)
             else:
                 # static target with the tabulated CM angular distribution
-                mu_cm = reader.get_elastic_mu(current_medium.element, state["energy"], rng)
+                mu_cm = reader.get_elastic_mu(element_i, state["energy"], rng)
 
-                A_sq = A**2
-                term = A_sq + 1 + 2*A*mu_cm
-                E_prime = state["energy"] * term / ((A + 1)**2)
+                A_sq = A_i**2
+                term = A_sq + 1 + 2*A_i*mu_cm
+                E_prime = state["energy"] * term / ((A_i + 1)**2)
 
-                numerator = 1 + A * mu_cm
+                numerator = 1 + A_i * mu_cm
                 denominator = np.sqrt(term)
                 mu_lab = numerator / denominator
 

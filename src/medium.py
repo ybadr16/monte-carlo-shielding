@@ -3,7 +3,7 @@ import numpy as np
 import math
 
 class Region:
-    def __init__(self, surfaces=None, operation="intersection", name=None, priority=0, is_void=False, element=None):
+    def __init__(self, surfaces=None, operation="intersection", name=None, priority=0, is_void=False, element=None, composition=None):
         """
         Create a region combining surfaces using boolean operations.
         :param surfaces: List of surfaces defining the region.
@@ -11,7 +11,10 @@ class Region:
         :param name: Name of the region.
         :param priority: Priority of the region (higher value means higher priority).
         :param is_void: Whether the region is a void (no material interaction).
-        :param element: The material element associated with the region.
+        :param element: Single-isotope data key (uses the global A/N/sampler).
+        :param composition: Optional list of Nuclide objects for a material
+            mixture. When given it overrides `element` and the global A/N/sampler;
+            when None the region is treated as the single isotope in `element`.
         """
         self.surfaces = surfaces if surfaces else []
         self.operation = operation
@@ -19,6 +22,7 @@ class Region:
         self.priority = priority
         self.is_void = is_void
         self.element = element
+        self.composition = composition
 
     def contains(self, x, y, z, tolerance=1e-9):
             evaluations = []

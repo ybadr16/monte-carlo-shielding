@@ -19,6 +19,7 @@ PyNeut implements continuous-energy neutron physics, including:
 - Inelastic scattering — discrete levels and continuum / multiplication, (n,2n), (n,3n)
 - Energy-dependent cross sections read directly from ENDF/B-VIII HDF5 files
 - Multi-region constructive-solid-geometry (planes, spheres, cylinders, boxes, voids, priorities)
+- Single-isotope or multi-isotope material mixtures per region (reacting isotope sampled per collision)
 - Analog and survival-biased (implicit-capture + roulette) transport
 - Parallel particle tracking via `multiprocessing`, mesh tallies (VTK) and trajectory recording
 
@@ -189,7 +190,9 @@ on every channel, and the `pytest` suite has **117 passing** tests.
   is validated (with upscatter), but molecular/crystalline binding in real
   moderators (water, graphite) is not modelled.
 - (n,3n) secondary energies use a 50/50 split approximation.
-- Single isotope per region (no material mixtures).
+- Material mixtures are supported (multiple isotopes per region via
+  `Region(composition=[Nuclide, …])` or `Material.mixture`); there is no built-in
+  natural-abundance database, so isotopes are specified explicitly.
 - No fission multiplication / k-eigenvalue (fission is absorption-only).
 - Charged-particle and photon products are not transported; neutrons only.
 - Source states are built by hand (no built-in spectrum/spatial sampler).
@@ -229,10 +232,10 @@ Ordered by engineering leverage (see `docs/index.md` for the full rationale):
    are the suspected hot paths), then take the cheap wins (local-variable state,
    `multiprocessing` chunking) before any Numba/`njit` work, which would demand
    the same array-flattening effort as a full event-vectorised rewrite.
-4. **Physics breadth** — material mixtures and natural elements (the largest
-   gap), S(α,β) thermal data, multi-temperature and Doppler-broadened libraries,
-   a track-length flux estimator, built-in source samplers (Watt, volumetric),
-   and additional validated isotopes.
+4. **Physics breadth** — S(α,β) thermal data, multi-temperature and
+   Doppler-broadened libraries, a track-length flux estimator, built-in source
+   samplers (Watt, volumetric), a natural-abundance database on top of the
+   existing material-mixture support, and additional validated isotopes.
 5. **Software hygiene** — replace the ten-element positional argument tuple to
    `simulate_single_particle` with a dataclass, and consolidate the duplicated
    isotope `element_map`.
