@@ -269,14 +269,21 @@ src/
 Stated honestly so results aren't over-trusted. These are *quantified* by the
 validation above.
 
-- **(n,2n)/(n,xn) emission spectrum shape is approximate.** Integral leakage and
-  mean energy agree with OpenMC, but the leakage *spectrum shape* differs
-  (χ²/dof ≈ 30–45 for Pb208/Be9; the Fe56-14 MeV WARNING is the same effect).
-  Two known causes (diagnosed in `validate_secondary.py`): the **CM→lab frame
-  transform is not applied** for CM-frame (n,xn) reactions (Fe56, Pb208), and
-  **Law-61 emission energies are not unit-base interpolated** between incident
-  grids. The correlated emission angle (Law 61 / Kalbach–Mann) *is* now used.
-  Not caused by the Maxwellian fallback (0 % usage).
+- **Leakage spectrum shape in multiplying / strongly-moderating cases.** Integral
+  leakage and mean escape energy agree with OpenMC, but the leakage *spectrum
+  shape* differs in the (n,2n) sphere cases (Pb208 χ²/dof ≈ 28, Be9 ≈ 52) and the
+  B10 epithermal case (≈ 14); the Fe56-14 MeV WARNING is the same effect (FAIR,
+  ≈ 4.7). This is **not** an emission defect: the single-collision (n,xn) emission
+  is verified to match OpenMC node-for-node (`validate_secondary.py`,
+  outgoing-energy χ²/dof ≈ 1) with the CM→lab frame boost, unit-base
+  outgoing-energy interpolation and correlated emission angle (Law 61 /
+  Kalbach–Mann) all applied. The residual is a **transport / multiple-scattering
+  slowing-down** accumulation — PyNeut slightly under-moderates across many mean
+  free paths (deficit at low energy, excess at mid) — and it is **not** the
+  Maxwellian evaporation fallback, which fires 0 % of the time. That the same
+  signature appears in the B10 epithermal case (no (n,2n)) confirms it is
+  transport-level. It biases only the differential leakage spectrum; integral
+  leakage and mean escape energy stay unbiased (within ~2σ).
 - **(n,3n) energy sharing is approximate** — the two emitted neutrons split the
   remaining energy budget 50/50 rather than sampling a true correlated spectrum.
 - **Thermal scattering is free-gas only (no S(α,β)).** The 294 K free-gas model

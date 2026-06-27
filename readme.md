@@ -176,7 +176,7 @@ on every channel, and the `pytest` suite has **117 passing** tests.
 
 - **Leakage spectrum shape in multiplying/strongly-moderating cases** — integrals
   and mean escape energies agree, but the leakage *spectrum shape* differs in the
-  (n,2n) sphere cases and the B10 epithermal case (χ²/dof ≈ 14–50). The
+  (n,2n) sphere cases and the B10 epithermal case (χ²/dof ≈ 14–52). The
   single-collision (n,xn) emission is **verified to match OpenMC**
   (`validate_secondary.py`: outgoing-energy χ²/dof ≈ 1 at every incident grid
   node) now that the CM→lab frame transform and unit-base outgoing-energy
