@@ -2,22 +2,24 @@
 <model>
   <materials>
     <material depletable="true" id="1">
-      <density units="g/cm3" value="18.74"/>
-      <nuclide ao="1.0" name="U235"/>
+      <density units="atom/b-cm" value="0.04797511"/>
+      <nuclide ao="0.010061675731436572" name="U234"/>
+      <nuclide ao="0.9378613201720641" name="U235"/>
+      <nuclide ao="0.05207700409649921" name="U238"/>
     </material>
   </materials>
   <geometry>
     <cell id="1" material="1" region="-1" universe="1"/>
-    <surface boundary="vacuum" coeffs="0.0 0.0 0.0 6.0" id="1" type="sphere"/>
+    <surface boundary="vacuum" coeffs="0.0 0.0 0.0 8.7407" id="1" type="sphere"/>
   </geometry>
   <settings>
     <run_mode>eigenvalue</run_mode>
-    <particles>1500</particles>
-    <batches>80</batches>
-    <inactive>20</inactive>
+    <particles>3000</particles>
+    <batches>120</batches>
+    <inactive>30</inactive>
     <source particle="neutron" strength="1.0" type="independent">
       <space type="box">
-        <parameters>-6.0 -6.0 -6.0 6.0 6.0 6.0</parameters>
+        <parameters>-8.7407 -8.7407 -8.7407 8.7407 8.7407 8.7407</parameters>
       </space>
       <constraints>
         <fissionable>true</fissionable>

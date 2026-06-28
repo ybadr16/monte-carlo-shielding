@@ -16,7 +16,8 @@ are directly comparable and the numbers are reproducible on any machine with
 | `validate_thermal.py` | Thermal / epithermal regime (B10, Cd112, C12) — probes the part of phase space PyNeut is *least* validated in. |
 | `validate_xs.py` | Cross-section interpolation check — PyNeut's reader vs `openmc.data.IncidentNeutron.from_hdf5`, channel by channel. No `cross_sections.xml` needed. |
 | `run_all.py` | Master runner. Executes every isotope module + the XS check, prints a summary table, and writes `validation_results.csv`. |
-| `validate_keff.py` | **k-eigenvalue** check — PyNeut's fission-source power iteration vs OpenMC's `eigenvalue` mode on bare U235 metal spheres, graded by the same k_eff z-score. |
+| `validate_keff.py` | **k-eigenvalue** check — PyNeut's fission-source power iteration vs OpenMC's `eigenvalue` mode. Default: bare U235 sphere sweep. `--benchmarks` runs the ICSBEP fast-metal benchmarks (Godiva, Jezebel-23, Jezebel) through both codes vs the published k_eff ≡ 1.0000 (needs U233/U234/U238 and Pu/Ga data). |
+| `validate_mixture.py` | **Material-mixture** check — per-collision isotope selection on a B10+C12 (B4C-like) sphere vs OpenMC, identical number densities in both codes. |
 | `main_benchmark.py` | Minimal standalone PyNeut-only Pb208 sphere benchmark. |
 | `../analytic_benchmarks.py` | PyNeut vs **exact analytic** results (no OpenMC): Beer–Lambert attenuation and elastic [α,1] / ξ kinematics. |
 
@@ -34,8 +35,14 @@ python run_all.py --n 2000 --isotopes Pb208,Fe56
 # Cross-section reader check only
 python validate_xs.py
 
+# Material mixture (B4C-like B10+C12 sphere) vs OpenMC
+python validate_mixture.py --n 20000
+
 # k-eigenvalue (bare U235 spheres) vs OpenMC eigenvalue mode
 python validate_keff.py --n 1500 --gens 80 --inactive 20
+
+# ICSBEP fast-metal benchmarks (Godiva, Jezebel-23, Jezebel) vs published k_eff
+python validate_keff.py --benchmarks --n 3000 --gens 120 --inactive 30
 
 # Exact analytic benchmarks (no OpenMC needed)
 python ../analytic_benchmarks.py

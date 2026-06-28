@@ -158,25 +158,57 @@ Maxwellian fallback (which fires **0 %** of the time).
 
 Also: **analytic benchmarks 13/13 PASS** (Beer–Lambert attenuation; elastic
 [α,1] / ξ within 0.3σ), the **cross-section reader matches OpenMC to 0.000 %**
-on every channel, and the `pytest` suite has **131 passing** tests.
+on every channel, and the `pytest` suite has **132 passing** tests.
+
+### Material mixtures vs OpenMC
+
+`Validation/OpenMC_Comparison/validate_mixture.py` validates the per-collision
+isotope-selection machinery on a B4C-like **B10 + C12** sphere (strong absorber +
+moderator), with **identical number densities** set in both codes:
+
+| Metric | OpenMC | PyNeut | z |
+|--------|-------:|-------:|--:|
+| leakage | 0.6881 ± 0.0039 | 0.6953 ± 0.0026 | 1.5 |
+| avg escape energy (eV) | 774 407 | 768 060 | 2.6 |
+
+Leakage — the integral the mixture machinery most directly drives — agrees within
+**1.5σ**. The escape-energy/spectrum residual (χ²/dof = 2.1, FAIR) is the same
+documented light-element slowing-down effect, not a mixture-specific defect.
 
 ### Criticality (k-eigenvalue) vs OpenMC
 
 `Validation/OpenMC_Comparison/validate_keff.py` compares PyNeut's fission-source
-power iteration against OpenMC's `eigenvalue` mode on bare U235 metal spheres
-(same density and data, matched geometry, graded by the same k_eff z-score):
+power iteration (lower-variance **collision estimator**) against OpenMC's
+`eigenvalue` mode on bare U235 metal spheres (same density and data, matched
+geometry, graded by the same k_eff z-score):
 
 | Sphere R (cm) | PyNeut k_eff | OpenMC k_eff | z | Status |
 |--------------:|-------------:|-------------:|--:|:------:|
-| 6.0 (subcritical) | 0.7476 ± 0.0040 | 0.7351 ± 0.0015 | 2.9 | WARNING |
-| 8.7 (≈ critical) | 1.0257 ± 0.0040 | 1.0195 ± 0.0023 | 1.3 | OK |
-| 11.0 (supercritical) | 1.2273 ± 0.0048 | 1.2272 ± 0.0026 | 0.0 | OK |
+| 6.0 (subcritical) | 0.7426 ± 0.0034 | 0.7351 ± 0.0015 | 2.0 | WARNING |
+| 8.7 (≈ critical) | 1.0237 ± 0.0035 | 1.0195 ± 0.0023 | 1.0 | OK |
+| 11.0 (supercritical) | 1.2275 ± 0.0044 | 1.2272 ± 0.0026 | 0.1 | OK |
 
 PyNeut reproduces the **~8.7 cm bare-U235 critical radius** (k ≈ 1.02) and agrees
-with OpenMC to within statistics near and above critical. The small high-leakage
-bias at R = 6 cm is consistent with PyNeut's **Watt χ** approximation (vs OpenMC's
-tabulated ENDF fission spectrum), whose spectrum-shape effect is largest where
-leakage dominates.
+with OpenMC to within statistics near and above critical. The small residual
+bias at the deeply subcritical R = 6 cm (most leakage-dominated, so most sensitive
+to spectrum shape) is consistent with PyNeut's **Watt χ** approximation vs
+OpenMC's tabulated ENDF fission spectrum.
+
+**ICSBEP fast-metal benchmarks** (`validate_keff.py --benchmarks`) — the three
+canonical bare-sphere critical assemblies, each run through *both* PyNeut and
+OpenMC and compared to the published k_eff ≡ 1.0000:
+
+| Benchmark | Fissile | PyNeut k_eff | OpenMC k_eff | z (OMC) | z (bench) |
+|-----------|:-------:|-------------:|-------------:|:-------:|:---------:|
+| Godiva (HEU-MET-FAST-001) | U235 | 0.9968 ± 0.0023 | 0.9979 ± 0.0014 | 0.4 | 1.3 |
+| Jezebel-23 (U233-MET-FAST-001) | U233 | 1.0006 ± 0.0021 | 0.9995 ± 0.0014 | 0.4 | 0.3 |
+| Jezebel (PU-MET-FAST-001) | Pu239 | 0.9957 ± 0.0023 | 1.0004 ± 0.0013 | 1.8 | 1.4 |
+
+Across **three different fissile isotopes**, PyNeut reproduces each recognized
+benchmark within **z ≤ 1.4 of the evaluated k_eff** and **z ≤ 1.8 of OpenMC** on
+the identical model. (Requires the ENDF/B-VIII U233/U234/U238 and
+Pu239/Pu240/Pu241/Ga data in `endfb/neutron/`; benchmarks whose isotopes are
+absent are skipped.)
 
 ## Physics Models
 
@@ -225,7 +257,7 @@ leakage dominates.
 ## Testing
 
 ```bash
-pytest -q                                              # 131 unit tests
+pytest -q                                              # 132 unit tests
 cd Validation/OpenMC_Comparison && python run_all.py   # PyNeut vs OpenMC
 python Validation/OpenMC_Comparison/validate_keff.py   # k-eigenvalue vs OpenMC
 python Validation/analytic_benchmarks.py               # exact analytic checks
@@ -249,11 +281,14 @@ Ordered by engineering leverage (see `docs/index.md` for the full rationale):
    three-dimensional Manim scene, so geometry changes no longer require
    hand-editing the animation script; move the export to a binary container as
    particle counts grow.
-2. **Criticality refinements** — k-eigenvalue is now implemented (`criticality.py`:
-   ν-weighted fission bank, Watt χ, generation power iteration). Remaining work:
-   read the tabulated ENDF χ instead of the Watt approximation, separate prompt
-   and delayed ν (time kinetics / β_eff), and validate more fissile isotopes and
-   ICSBEP benchmarks beyond bare U235 spheres.
+2. **Criticality refinements** — k-eigenvalue is implemented and validated
+   (`criticality.py`: ν-weighted fission bank, Watt χ, generation power iteration,
+   lower-variance collision estimator) against OpenMC and the **Godiva /
+   Jezebel-23 / Jezebel ICSBEP benchmarks** (z ≤ 1.4 of the evaluated k_eff across
+   three fissile isotopes). Remaining work: read the tabulated ENDF χ instead of
+   the Watt approximation, separate prompt and delayed ν (time kinetics / β_eff),
+   add reflected and thermal-solution benchmarks, and ship a small fissile-isotope
+   data subset so the benchmarks are reproducible without a full library download.
 3. **Performance** — profile first (the boundary search and cross-section lookups
    are the suspected hot paths), then take the cheap wins (local-variable state,
    `multiprocessing` chunking) before any Numba/`njit` work, which would demand

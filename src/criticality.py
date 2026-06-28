@@ -14,6 +14,12 @@ ones with batch-means statistics (`statistics.mean_sem`). The fission bank is
 resampled back to a fixed nominal size each cycle so the population neither dies
 nor explodes; that resampling controls only the population, not the k estimate
 (which is scored before resampling).
+
+A second, lower-variance **collision estimator** is accumulated in parallel:
+every collision contributes w·Σᵢ νᵢ·Σ_f,ᵢ / Σ_t (scored in the transport kernel
+as `physics_counts["fission_production"]`), so k_collision = (total fission
+production) / (source neutrons started). Both estimators are unbiased and agree
+in the mean; the collision one is reported as the primary k_eff.
 """
 import numpy as np
 
@@ -79,6 +85,8 @@ def run_keff(reader, mediums, initial_source, A, N, sampler, settings,
 
     source = initial_source
     cycles = []
+    active_src = []   # per-active-generation source (analog) estimator
+    active_col = []   # per-active-generation collision estimator
     rng_state = np.random.default_rng(seed)
     seed_counter = int(seed) * 1_000_003
 
@@ -94,29 +102,39 @@ def run_keff(reader, mediums, initial_source, A, N, sampler, settings,
             results = [simulate_single_particle(a) for a in args]
 
         new_sites = []
+        production = 0.0
         for res in results:
             new_sites.extend(res["fission_sites"])
+            production += res["physics_counts"].get("fission_production", 0.0)
 
         started = len(source)
         produced = len(new_sites)
-        k = produced / started
+        k_src = produced / started
+        k_col = production / started
         is_active = gen >= inactive
-        cycles.append((gen, k, is_active))
+        cycles.append((gen, k_col, k_src, is_active))
+        if is_active:
+            active_src.append(k_src)
+            active_col.append(k_col)
 
         if verbose:
             tag = "active" if is_active else "settle"
-            print(f"  gen {gen:3d}  k={k:.5f}  src={started:5d}  fiss={produced:5d}  [{tag}]")
+            print(f"  gen {gen:3d}  k_col={k_col:.5f}  k_src={k_src:.5f}  "
+                  f"src={started:5d}  fiss={produced:5d}  [{tag}]")
 
         if produced == 0:
             break  # chain died out (deeply subcritical)
 
         source = _resample(new_sites, gen_size, rng_state)
 
-    active_k = [k for (_, k, a) in cycles if a]
-    k_eff, k_sem = mean_sem(active_k)
+    # the collision estimator is lower-variance, so it is the primary k_eff
+    k_eff, k_sem = mean_sem(active_col)
+    k_src_eff, k_src_sem = mean_sem(active_src)
     return {
         "k_eff": k_eff,
         "k_sem": k_sem,
-        "active_k": active_k,
+        "k_source": k_src_eff,
+        "k_source_sem": k_src_sem,
+        "active_k": active_col,
         "cycles": cycles,
     }

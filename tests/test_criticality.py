@@ -120,6 +120,21 @@ def test_keff_subcritical_vs_supercritical_trend():
     assert np.isfinite(large["k_sem"]) and large["k_sem"] > 0
 
 
+def test_keff_reports_both_estimators_in_agreement():
+    reader, N, sampler = _u235()
+    mediums = [Region(surfaces=[Sphere((0, 0, 0), 8.7)],
+                      name="core", priority=1, element="U235")]
+    src = uniform_sphere_source((0, 0, 0), 8.7, 300, RNGHandler(5))
+    out = run_keff(reader, mediums, src, A_U235, N, sampler,
+                   Settings("criticality", 1), generations=30, inactive=10, seed=4)
+    # both the collision (primary k_eff) and source estimators are reported,
+    # finite, near critical, and consistent in the mean
+    assert out["k_eff"] > 0 and out["k_source"] > 0
+    assert np.isfinite(out["k_sem"]) and np.isfinite(out["k_source_sem"])
+    comb = np.hypot(out["k_sem"], out["k_source_sem"])
+    assert abs(out["k_eff"] - out["k_source"]) < 5 * comb
+
+
 def test_keff_driver_requires_nonempty_source():
     reader, N, sampler = _u235()
     with pytest.raises(ValueError):

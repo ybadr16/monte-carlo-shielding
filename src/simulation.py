@@ -256,6 +256,18 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
 
         state["has_interacted"] = True
 
+        # collision estimator of fission production (k-eff): every collision
+        # contributes w·Σᵢ νᵢ·Σ_f,ᵢ / Σ_t, lower variance than counting actual
+        # fission events. Only scored when a fission bank is active (criticality).
+        if fission_bank is not None and Sig_fis > 0.0 and counters is not None:
+            nu_sigf = 0.0
+            for entry in iso_data:
+                if entry[4] > 0.0:
+                    nu_sigf += reader.get_nu(entry[0].element, state["energy"]) * entry[4]
+            counters["fission_production"] = (
+                counters.get("fission_production", 0.0)
+                + state["weight"] * nu_sigf / Sigma_t)
+
         if settings and settings.use_implicit_capture:
             if state["weight"] < settings.weight_cutoff:
                 if rng.random() < settings.roulette_survival_prob:

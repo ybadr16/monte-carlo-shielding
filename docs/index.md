@@ -142,27 +142,60 @@ capture, (n,2n)) for all isotopes: **all agree to 0.000 %** — PyNeut reads and
 interpolates the data identically to OpenMC, so any transport difference is
 physics-kernel, not data-layer.
 
+### Material mixtures
+
+`python Validation/OpenMC_Comparison/validate_mixture.py` — the per-collision
+isotope-selection machinery on a B4C-like **B10 + C12** sphere (absorber +
+moderator), with identical number densities in both codes:
+
+| Metric | OpenMC | PyNeut | z |
+|--------|-------:|-------:|--:|
+| leakage | 0.6881 ± 0.0039 | 0.6953 ± 0.0026 | 1.5 |
+| avg escape energy (eV) | 774 407 | 768 060 | 2.6 |
+
+Leakage — the integral the mixture machinery most directly drives — agrees to
+**1.5σ**; the escape-energy residual (spectrum χ²/dof = 2.1, FAIR) is the same
+documented light-element slowing-down effect, not a mixture-specific defect.
+
 ### Criticality (k-eigenvalue)
 
 `python Validation/OpenMC_Comparison/validate_keff.py` — PyNeut's fission-source
-power iteration vs OpenMC's `eigenvalue` mode on bare U235 metal spheres (same
-density and ENDF data, matched geometry), graded by the k_eff z-score:
+power iteration (lower-variance **collision estimator**) vs OpenMC's `eigenvalue`
+mode on bare U235 metal spheres (same density and ENDF data, matched geometry),
+graded by the k_eff z-score:
 
 | Sphere R (cm) | PyNeut k_eff | OpenMC k_eff | z | Status |
 |--------------:|-------------:|-------------:|--:|:------:|
-| 6.0 (subcritical) | 0.7476 ± 0.0040 | 0.7351 ± 0.0015 | 2.9 | WARNING |
-| 8.7 (≈ critical) | 1.0257 ± 0.0040 | 1.0195 ± 0.0023 | 1.3 | OK |
-| 11.0 (supercritical) | 1.2273 ± 0.0048 | 1.2272 ± 0.0026 | 0.0 | OK |
+| 6.0 (subcritical) | 0.7426 ± 0.0034 | 0.7351 ± 0.0015 | 2.0 | WARNING |
+| 8.7 (≈ critical) | 1.0237 ± 0.0035 | 1.0195 ± 0.0023 | 1.0 | OK |
+| 11.0 (supercritical) | 1.2275 ± 0.0044 | 1.2272 ± 0.0026 | 0.1 | OK |
 
 PyNeut reproduces the **~8.7 cm bare-U235 critical radius** and matches OpenMC to
-within statistics near and above critical (k agrees to 0.0002 at R = 11 cm). The
-high-leakage bias at R = 6 cm is consistent with the **Watt χ** approximation
-(vs OpenMC's tabulated ENDF χ), whose spectrum-shape effect is largest where
-leakage dominates — see [Limitations](#current-limitations).
+within statistics near and above critical (k agrees to 0.0003 at R = 11 cm). The
+residual bias at the deeply subcritical R = 6 cm (most leakage-dominated) is
+consistent with the **Watt χ** approximation (vs OpenMC's tabulated ENDF χ),
+whose spectrum-shape effect is largest where leakage dominates — see
+[Limitations](#current-limitations).
+
+**ICSBEP fast-metal benchmarks** (`validate_keff.py --benchmarks`) — the three
+canonical bare critical spheres, each run through both PyNeut and OpenMC and
+compared to the published k_eff ≡ 1.0000:
+
+| Benchmark | Fissile | PyNeut k_eff | OpenMC k_eff | z (OMC) | z (bench) |
+|-----------|:-------:|-------------:|-------------:|:-------:|:---------:|
+| Godiva (HEU-MET-FAST-001) | U235 | 0.9968 ± 0.0023 | 0.9979 ± 0.0014 | 0.4 | 1.3 |
+| Jezebel-23 (U233-MET-FAST-001) | U233 | 1.0006 ± 0.0021 | 0.9995 ± 0.0014 | 0.4 | 0.3 |
+| Jezebel (PU-MET-FAST-001) | Pu239 | 0.9957 ± 0.0023 | 1.0004 ± 0.0013 | 1.8 | 1.4 |
+
+Across **three fissile isotopes** (U235, U233, Pu239) PyNeut reproduces each
+recognized benchmark within **z ≤ 1.4 of the evaluated k_eff** and **z ≤ 1.8 of
+OpenMC** on the identical model — OpenMC also lands on 1.0000 ± for every spec,
+confirming the benchmark geometry/composition. Requires the ENDF/B-VIII
+U233/U234/U238 and Pu/Ga data in `endfb/neutron/`; absent benchmarks are skipped.
 
 ### Unit tests
 
-`pytest` — **131 passing** (geometry vs analytic & trimesh ground truth,
+`pytest` — **132 passing** (geometry vs analytic & trimesh ground truth,
 material/number-density math, cross-section reader, scattering kinematics,
 inelastic physics, batch-statistics, tally uncertainties, transport diagnostics).
 
