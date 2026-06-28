@@ -1,4 +1,9 @@
+import math
+
 import numpy as np
+
+_SQRT_PI = math.sqrt(math.pi)
+_HALF_PI = 0.5 * math.pi
 
 
 class VelocitySampler:
@@ -21,21 +26,13 @@ class VelocitySampler:
         """Calculate beta based on the mass of the nucleus and temperature."""
         return np.sqrt(self.mass / (2 * self.k_B * self.temperature))
 
-    def _sample_from_2x3_exp_neg_x2(self):
-        """Samples x from the distribution 2x^3 * exp(-x^2)."""
-        while True:
-            x = np.random.uniform(0, 10)  # Choose an upper limit suitable for the problem
-            p = 2 * x**3 * np.exp(-x**2)
-            if np.random.uniform(0, 1) < p:
-                return x
-
-    def _sample_from_4pi_x2_exp_neg_x2(self):
-        """Samples x from the distribution 4πx^2 * exp(-x^2)."""
-        while True:
-            x = np.random.uniform(0, 10)  # Choose an upper limit suitable for the problem
-            p = 4 * x**2 * np.exp(-x**2)/np.sqrt(np.pi)
-            if np.random.uniform(0, 1) < p:
-                return x
+    # The two target-speed shapes are sampled directly (inverse-CDF / gamma
+    # decomposition) instead of by acceptance-rejection. This is the standard
+    # SVT method (as in MCNP/OpenMC) and draws the identical distributions:
+    #   x^3 exp(-x^2):  x = sqrt(-ln(r1 r2))                  [t=x^2 ~ Gamma(2)]
+    #   x^2 exp(-x^2):  x = sqrt(-ln r1 - ln r2 cos^2(pi/2 r3)) [t=x^2 ~ Gamma(3/2)]
+    # The old rejection proposal was uniform on [0,10] with ~10% acceptance, so
+    # this removes the dominant per-collision cost in thermal problems.
 
     def sample_velocity(self, vn, max_attempts=1000, return_mu=False):
         """Free-gas (SVT) target velocity by acceptance-rejection on the relative speed.
@@ -43,23 +40,24 @@ class VelocitySampler:
         With return_mu, returns (v_t, mu); the speed and its cosine must be used
         together or the speed-angle correlation (detailed balance) is lost.
         """
-        for attempt in range(max_attempts):
-            xi1 = np.random.uniform(0, 1)
-            if xi1 < 2 / (np.sqrt(np.pi) * vn + 2):
-                x = self._sample_from_2x3_exp_neg_x2()
+        beta = self.beta
+        p_first = 2.0 / (_SQRT_PI * vn + 2.0)
+        for _attempt in range(max_attempts):
+            # one batched draw per attempt: r0 branch, r1-r3 speed shape,
+            # r4 cosine, r5 acceptance. 1.0 - r keeps log arguments positive.
+            r = np.random.random(6)
+            if r[0] < p_first:
+                x = math.sqrt(-math.log((1.0 - r[1]) * (1.0 - r[2])))
             else:
-                x = self._sample_from_4pi_x2_exp_neg_x2()
+                c = math.cos(_HALF_PI * r[3])
+                x = math.sqrt(-math.log(1.0 - r[1]) - math.log(1.0 - r[2]) * c * c)
 
-            v_t = x / self.beta
-
-            xi2 = np.random.uniform(0, 1)
-            mu = 2 * xi2 - 1
+            v_t = x / beta
+            mu = 2.0 * r[4] - 1.0
 
             # accept with probability proportional to the relative speed
-            xi3 = np.random.uniform(0, 1)
-            acceptance_prob = np.sqrt((vn**2 + v_t**2 - 2 * vn * v_t * mu)) / (vn + v_t)
-
-            if xi3 < acceptance_prob:
+            acceptance_prob = math.sqrt(vn * vn + v_t * v_t - 2.0 * vn * v_t * mu) / (vn + v_t)
+            if r[5] < acceptance_prob:
                 return (v_t, mu) if return_mu else v_t
 
         raise ValueError("Failed to find an accepted sample within the maximum attempts")
