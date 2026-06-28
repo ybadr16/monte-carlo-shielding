@@ -14,5 +14,6 @@ endfb/cross_sections.xml
 *:Zone.Identifier
 .ipynb_checkpoints/
 
+#paper stuff
 paper_template/
-
+endfb/

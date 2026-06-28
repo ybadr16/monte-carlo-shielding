@@ -91,10 +91,13 @@ for slab/cylinder/detector variations.
 
 ## ENDF/B-VIII Data
 
-Place OpenMC-format HDF5 files in `./endfb/neutron/`. The repo ships ten
-isotopes: Al27, B10, Be9, C12, Cd112, Fe56, O16, Pb207, Pb208, U235. More are
-available from the [OpenMC data libraries](https://openmc.org/data-libraries/)
-or [NNDC ENDF/B-VIII](https://www.nndc.bnl.gov/endf/).
+PyNeut reads OpenMC-format HDF5 files from `./endfb/neutron/`. The data files are
+**not shipped in the repository** (they are large); download ENDF/B-VIII.0 from
+the [OpenMC data libraries](https://openmc.org/data-libraries/) or
+[NNDC ENDF/B-VIII](https://www.nndc.bnl.gov/endf/) and place the `*.h5` files
+there. The validation suite uses ten isotopes — Al27, B10, Be9, C12, Cd112, Fe56,
+O16, Pb207, Pb208, U235 — plus U233/U234/U238 and Pu239–241/Ga for the ICSBEP
+benchmarks.
 
 ## Code Structure
 
