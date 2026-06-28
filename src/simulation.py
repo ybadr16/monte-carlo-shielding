@@ -1,4 +1,8 @@
-from .geometry import calculate_nearest_boundary, calculate_void_si_max
+from .geometry import (
+    calculate_nearest_crossing,
+    calculate_void_si_max,
+    reflect_direction,
+)
 from .physics import (
     elastic_scattering,
     inelastic_scattering,
@@ -161,6 +165,38 @@ def _emit_secondary_neutron(reader, element, mt, E_in, E_avail, A, rng):
     return max(1e-5, E), mu, src
 
 
+def _advance_across_boundary(state, nearest_point, nearest_surface, u, v, w, epsilon):
+    """Move the neutron onto the boundary it is about to cross and apply that
+    surface's boundary condition.
+
+    For a "reflective" surface the direction is specularly reflected and the
+    neutron is nudged back into the current medium; otherwise it transmits across
+    (the default vacuum-leakage behaviour). Returns the (possibly reflected)
+    direction cosines (u, v, w).
+    """
+    px, py, pz = nearest_point
+    if (nearest_surface is not None
+            and getattr(nearest_surface, "boundary_type", "transmission") == "reflective"):
+        nx, ny, nz = nearest_surface.normal(px, py, pz)
+        u, v, w = reflect_direction(u, v, w, nx, ny, nz)
+        # Step off the surface ALONG THE NORMAL by epsilon, in the inward sense
+        # (the side the reflected ray goes). Nudging along the reflected
+        # direction instead fails at grazing incidence: there the reflected ray
+        # is nearly parallel to the surface, the normal clearance is ~0, the
+        # point stays within the on-surface tolerance, and the neutron
+        # re-triggers a zero-distance crossing indefinitely (a reflection trap).
+        s = epsilon if (u * nx + v * ny + w * nz) > 0 else -epsilon
+        state["x"] = px + s * nx
+        state["y"] = py + s * ny
+        state["z"] = pz + s * nz
+    else:
+        # transmission: nudge past the surface along the direction of travel
+        state["x"] = px + epsilon * u
+        state["y"] = py + epsilon * v
+        state["z"] = pz + epsilon * w
+    return u, v, w
+
+
 def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, track_coordinates, rng, settings,
                         counters=None, fission_bank=None):
     epsilon = 1e-6
@@ -197,7 +233,8 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
         if current_medium is None:
             return "escaped", children, trajectory, absorbed_weight_local, absorbed_coords_local
 
-        nearest_point, _, nearest_distance = calculate_nearest_boundary(state, mediums, u, v, w)
+        nearest_point, _, nearest_distance, nearest_surface = calculate_nearest_crossing(
+            state, mediums, u, v, w)
 
         if nearest_point is None:
              return "escaped", children, trajectory, absorbed_weight_local, absorbed_coords_local
@@ -205,10 +242,8 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
         # stream through voids to the next surface
         if current_medium.is_void:
             if nearest_point is not None:
-                state["x"], state["y"], state["z"] = nearest_point
-                state["x"] += epsilon * u
-                state["y"] += epsilon * v
-                state["z"] += epsilon * w
+                u, v, w = _advance_across_boundary(
+                    state, nearest_point, nearest_surface, u, v, w, epsilon)
             continue
 
         # per-isotope macroscopic cross sections for this medium; an explicit
@@ -241,10 +276,8 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
             si = -np.log(1 - rng.random()) / Sigma_t
 
         if si > nearest_distance:
-            state["x"], state["y"], state["z"] = nearest_point
-            state["x"] += epsilon * u
-            state["y"] += epsilon * v
-            state["z"] += epsilon * w
+            u, v, w = _advance_across_boundary(
+                state, nearest_point, nearest_surface, u, v, w, epsilon)
             continue
 
         state["x"] += si * u

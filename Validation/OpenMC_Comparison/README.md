@@ -18,6 +18,7 @@ are directly comparable and the numbers are reproducible on any machine with
 | `run_all.py` | Master runner. Executes every isotope module + the XS check, prints a summary table, and writes `validation_results.csv`. |
 | `validate_keff.py` | **k-eigenvalue** check — PyNeut's fission-source power iteration vs OpenMC's `eigenvalue` mode. Default: bare U235 sphere sweep. `--benchmarks` runs the ICSBEP fast-metal benchmarks (Godiva, Jezebel-23, Jezebel) through both codes vs the published k_eff ≡ 1.0000 (needs U233/U234/U238 and Pu/Ga data). |
 | `validate_mixture.py` | **Material-mixture** check — per-collision isotope selection on a B10+C12 (B4C-like) sphere vs OpenMC, identical number densities in both codes. |
+| `validate_pincell.py` | **k-infinity** check — BEAVRS HZP pin cell (UO2 / He / Zircaloy-4 / borated water) in an all-reflective cube, i.e. an infinite lattice. The thermal/moderated complement to the fast-metal `validate_keff` benchmarks; exercises reflective boundaries and the free-gas moderator treatment. Both codes run *matched physics* (free-gas H, 294 K, no S(α,β)) for the validation z-score, and the realistic 600 K + `c_H_in_H2O` OpenMC value is reported alongside to document the bound-thermal physics PyNeut omits. Needs the 36 pin-cell nuclides (U/O/H/B/Zr/Sn/Fe/Cr/He) in the data dir. |
 | `main_benchmark.py` | Minimal standalone PyNeut-only Pb208 sphere benchmark. |
 | `../analytic_benchmarks.py` | PyNeut vs **exact analytic** results (no OpenMC): Beer–Lambert attenuation and elastic [α,1] / ξ kinematics. |
 
@@ -43,6 +44,14 @@ python validate_keff.py --n 1500 --gens 80 --inactive 20
 
 # ICSBEP fast-metal benchmarks (Godiva, Jezebel-23, Jezebel) vs published k_eff
 python validate_keff.py --benchmarks --n 3000 --gens 120 --inactive 30
+
+# k-infinity (BEAVRS HZP pin cell, reflective lattice) vs OpenMC
+python validate_pincell.py --endf /path/to/endfb --n 2000 --gens 100 --inactive 20
+python validate_pincell.py --quick        # fast smoke test
+# NOTE: the reflective lattice has no leakage, so neutrons terminate only on
+# absorption -> thermal histories random-walk for hundreds of collisions and the
+# PyNeut side is ~100x heavier than the fast-metal spheres. OpenMC is quick;
+# budget accordingly (or lower --n) for the pure-Python run.
 
 # Exact analytic benchmarks (no OpenMC needed)
 python ../analytic_benchmarks.py

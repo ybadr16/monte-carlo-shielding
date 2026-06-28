@@ -23,52 +23,80 @@ class Region:
         self.is_void = is_void
         self.element = element
         self.composition = composition
+        self._prim_cache = None  # flattened primitive surfaces (lazy, see geometry)
 
     def contains(self, x, y, z, tolerance=1e-9):
-            evaluations = []
-            for surface in self.surfaces:
-                if isinstance(surface, Region):
-                    # Pass the tolerance down recursively to nested regions
-                    evaluations.append(surface.contains(x, y, z, tolerance))
-                else:
-                    # THE FIX: Check against tolerance instead of 0
-                    # This treats 0.000000001 as "inside" (effectively on the surface)
-                    eval_result = surface.evaluate(x, y, z) <= tolerance
-                    evaluations.append(eval_result)
+        # Short-circuit each boolean op: bail on the first decisive surface
+        # rather than evaluating all of them into a list (this is the geometry
+        # hot path, called once per candidate boundary crossing). The per-surface
+        # test is inlined to avoid an extra call layer; a nested Region recurses,
+        # a primitive is "inside" when evaluate(x,y,z) <= tolerance (the
+        # tolerance treats a point sitting on the surface as inside).
+        op = self.operation
+        surfaces = self.surfaces
 
-            if self.operation == "intersection":
-                return all(evaluations)
-            elif self.operation == "union":
-                return any(evaluations)
-            elif self.operation == "complement":
-                return not evaluations[0]
-            elif self.operation == "difference":
-                # A - B = A ∩ ¬B
-                if len(self.surfaces) != 2:
-                    raise ValueError("Difference operation requires exactly two surfaces")
-                a = evaluations[0]
-                b = evaluations[1]
-                return a and not b
-            else:
-                raise ValueError(f"Unknown operation: {self.operation}")
+        if op == "intersection":
+            for s in surfaces:
+                if isinstance(s, Region):
+                    if not s.contains(x, y, z, tolerance):
+                        return False
+                elif s.evaluate(x, y, z) > tolerance:
+                    return False
+            return True
+
+        if op == "union":
+            for s in surfaces:
+                inside = (s.contains(x, y, z, tolerance) if isinstance(s, Region)
+                          else s.evaluate(x, y, z) <= tolerance)
+                if inside:
+                    return True
+            return False
+
+        if op == "complement":
+            s = surfaces[0]
+            inside = (s.contains(x, y, z, tolerance) if isinstance(s, Region)
+                      else s.evaluate(x, y, z) <= tolerance)
+            return not inside
+
+        if op == "difference":
+            # A - B = A ∩ ¬B
+            if len(surfaces) != 2:
+                raise ValueError("Difference operation requires exactly two surfaces")
+            a, b = surfaces
+            a_in = (a.contains(x, y, z, tolerance) if isinstance(a, Region)
+                    else a.evaluate(x, y, z) <= tolerance)
+            if not a_in:
+                return False
+            b_in = (b.contains(x, y, z, tolerance) if isinstance(b, Region)
+                    else b.evaluate(x, y, z) <= tolerance)
+            return not b_in
+
+        raise ValueError(f"Unknown operation: {op}")
 
     def add_surface(self, surface):
         """Add a surface to the region."""
         self.surfaces.append(surface)
+        self._prim_cache = None  # invalidate the flattened-primitive cache
 
 
 
 class Plane:
-    def __init__(self, A, B, C, D):
+    def __init__(self, A, B, C, D, boundary_type="transmission"):
         # Normalize the normal vector (A, B, C)
         norm = np.sqrt(A**2 + B**2 + C**2)
         if np.isclose(norm, 0):
             raise ValueError("Plane normal cannot be a zero vector")
 
-        self.A = A / norm
-        self.B = B / norm
-        self.C = C / norm
-        self.D = -D / norm  # Adjusted for normalized normal
+        # store as plain Python floats: the per-collision hot path evaluates
+        # these millions of times and np.float64 scalar arithmetic is several
+        # times slower than float for no benefit here.
+        self.A = float(A / norm)
+        self.B = float(B / norm)
+        self.C = float(C / norm)
+        self.D = float(-D / norm)  # Adjusted for normalized normal
+        # "transmission" (default) lets a neutron cross and leave the geometry
+        # (vacuum leakage); "reflective" specularly reflects it back in.
+        self.boundary_type = boundary_type
 
     def evaluate(self, x, y, z):
         return self.A * x + self.B * y + self.C * z + self.D
@@ -77,8 +105,11 @@ class Plane:
         numerator = -self.D - self.A*x - self.B*y - self.C*z
         denominator = self.A*u + self.B*v + self.C*w
 
-        if np.isclose(numerator, 0, atol=1e-8):
-            return 0.0 if not np.isclose(denominator, 0) else None
+        # scalar abs comparisons reproduce np.isclose(.,0,atol=1e-8) at a tiny
+        # fraction of the cost (np.isclose allocates arrays + runs a ufunc
+        # reduce inside an errstate context — ~100x slower for a scalar).
+        if abs(numerator) <= 1e-8:
+            return 0.0 if abs(denominator) > 1e-8 else None
 
         if denominator == 0:
             return None
@@ -93,10 +124,11 @@ class Plane:
         return (self.A / mag, self.B / mag, self.C / mag)
 
 class Cylinder:
-    def __init__(self, axis, radius, center):
+    def __init__(self, axis, radius, center, boundary_type="transmission"):
         self.axis = axis
         self.radius = radius
         self.x0, self.y0, self.z0 = center
+        self.boundary_type = boundary_type
 
     def evaluate(self, x, y, z):
         if self.axis == "z":
@@ -182,9 +214,10 @@ class Cylinder:
             return (dx/mag, 0.0, dz/mag)
 
 class Sphere:
-    def __init__(self, center, radius):
+    def __init__(self, center, radius, boundary_type="transmission"):
         self.x0, self.y0, self.z0 = center
         self.radius = radius
+        self.boundary_type = boundary_type
 
     def evaluate(self, x, y, z):
         return (x - self.x0) ** 2 + (y - self.y0) ** 2 + (z - self.z0) ** 2 - self.radius ** 2
@@ -228,16 +261,21 @@ class Sphere:
         return (dx / mag, dy / mag, dz / mag)
 
 class Box(Region):
-    def __init__(self, x_min, x_max, y_min, y_max, z_min, z_max):
+    def __init__(self, x_min, x_max, y_min, y_max, z_min, z_max,
+                 boundary_type="transmission"):
         """
         Define a box region bounded by planes at x_min, x_max, y_min, y_max, z_min, and z_max.
+
+        `boundary_type` is applied to all six bounding planes; pass "reflective"
+        for an infinite-lattice (e.g. pin-cell) calculation.
         """
+        bt = boundary_type
         planes = [
-            Plane(-1, 0, 0, -x_min),  # x >= x_min: -x + x_min ≤ 0 → x ≥ x_min
-            Plane(1, 0, 0, x_max),    # x <= x_max: x - x_max ≤ 0 → x ≤ x_max
-            Plane(0, -1, 0, -y_min),  # y >= y_min: -y + y_min ≤ 0 → y ≥ y_min
-            Plane(0, 1, 0, y_max),    # y <= y_max: y - y_max ≤ 0 → y ≤ y_max
-            Plane(0, 0, -1, -z_min),  # z >= z_min: -z + z_min ≤ 0 → z ≥ z_min
-            Plane(0, 0, 1, z_max),    # z <= z_max: z - z_max ≤ 0 → z ≤ z_max
+            Plane(-1, 0, 0, -x_min, bt),  # x >= x_min: -x + x_min ≤ 0 → x ≥ x_min
+            Plane(1, 0, 0, x_max, bt),    # x <= x_max: x - x_max ≤ 0 → x ≤ x_max
+            Plane(0, -1, 0, -y_min, bt),  # y >= y_min: -y + y_min ≤ 0 → y ≥ y_min
+            Plane(0, 1, 0, y_max, bt),    # y <= y_max: y - y_max ≤ 0 → y ≤ y_max
+            Plane(0, 0, -1, -z_min, bt),  # z >= z_min: -z + z_min ≤ 0 → z ≥ z_min
+            Plane(0, 0, 1, z_max, bt),    # z <= z_max: z - z_max ≤ 0 → z ≤ z_max
         ]
         super().__init__(surfaces=planes, operation="intersection", name="Box")
