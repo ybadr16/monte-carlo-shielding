@@ -1,0 +1,74 @@
+<?xml version='1.0' encoding='utf-8'?>
+<model>
+  <materials>
+    <material depletable="true" id="5" name="homog" temperature="294.0">
+      <density units="atom/b-cm" value="0.0687244468849801"/>
+      <nuclide ao="1.9507713819573034e-06" name="U234"/>
+      <nuclide ao="0.00021825247908278364" name="U235"/>
+      <nuclide ao="0.006733069175408652" name="U238"/>
+      <nuclide ao="9.997011843575015e-07" name="U236"/>
+      <nuclide ao="0.02839314877978503" name="O16"/>
+      <nuclide ao="1.0786669188204942e-05" name="O17"/>
+      <nuclide ao="5.693312148835135e-05" name="O18"/>
+      <nuclide ao="5.570253113582941e-12" name="He3"/>
+      <nuclide ao="2.7851209865383575e-06" name="He4"/>
+      <nuclide ao="0.0021192959178932295" name="Zr90"/>
+      <nuclide ao="0.0004621671564385236" name="Zr91"/>
+      <nuclide ao="0.0007064319726310768" name="Zr92"/>
+      <nuclide ao="0.0007159059874243798" name="Zr94"/>
+      <nuclide ao="0.00011533583226629824" name="Zr96"/>
+      <nuclide ao="4.537642141609663e-07" name="Sn112"/>
+      <nuclide ao="3.0874678489302857e-07" name="Sn114"/>
+      <nuclide ao="1.5905137403580257e-07" name="Sn115"/>
+      <nuclide ao="6.801785230825203e-06" name="Sn116"/>
+      <nuclide ao="3.5926898605734227e-06" name="Sn117"/>
+      <nuclide ao="1.133007140925629e-05" name="Sn118"/>
+      <nuclide ao="4.018386185198659e-06" name="Sn119"/>
+      <nuclide ao="1.5240864017901316e-05" name="Sn120"/>
+      <nuclide ao="2.1659054758404887e-06" name="Sn122"/>
+      <nuclide ao="2.7085513401979316e-06" name="Sn124"/>
+      <nuclide ao="8.417761620557864e-07" name="Fe54"/>
+      <nuclide ao="1.3214085538625603e-05" name="Fe56"/>
+      <nuclide ao="3.051708618299764e-07" name="Fe57"/>
+      <nuclide ao="4.061263946958627e-08" name="Fe58"/>
+      <nuclide ao="3.2003463587972923e-07" name="Cr50"/>
+      <nuclide ao="6.171549391421549e-06" name="Cr52"/>
+      <nuclide ao="6.998041600675045e-07" name="Cr53"/>
+      <nuclide ao="1.7419606763073873e-07" name="Cr54"/>
+      <nuclide ao="0.029100115874714116" name="H1"/>
+      <nuclide ao="4.532757978055479e-06" name="H2"/>
+      <nuclide ao="2.812163912512299e-06" name="B10"/>
+      <nuclide ao="1.1376352295925133e-05" name="B11"/>
+    </material>
+  </materials>
+  <geometry>
+    <cell id="1" material="5" region="1 -2 3 -4 5 -6" universe="1"/>
+    <surface boundary="reflective" coeffs="-0.62992" id="1" type="x-plane"/>
+    <surface boundary="reflective" coeffs="0.62992" id="2" type="x-plane"/>
+    <surface boundary="reflective" coeffs="-0.62992" id="3" type="y-plane"/>
+    <surface boundary="reflective" coeffs="0.62992" id="4" type="y-plane"/>
+    <surface boundary="reflective" coeffs="-0.62992" id="5" type="z-plane"/>
+    <surface boundary="reflective" coeffs="0.62992" id="6" type="z-plane"/>
+  </geometry>
+  <settings>
+    <run_mode>eigenvalue</run_mode>
+    <particles>400</particles>
+    <batches>25</batches>
+    <inactive>8</inactive>
+    <source particle="neutron" strength="1.0" type="independent">
+      <space type="box">
+        <parameters>-0.62992 -0.62992 -0.62992 0.62992 0.62992 0.62992</parameters>
+      </space>
+      <constraints>
+        <fissionable>true</fissionable>
+      </constraints>
+    </source>
+    <output>
+      <summary>false</summary>
+      <tallies>false</tallies>
+    </output>
+    <verbosity>1</verbosity>
+    <temperature_default>294.0</temperature_default>
+    <temperature_method>nearest</temperature_method>
+  </settings>
+  </model>

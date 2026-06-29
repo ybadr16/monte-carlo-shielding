@@ -291,6 +291,31 @@ class SecondaryDistribution:
         return np.log(T + np.sqrt(T * T + 1.0)) / a
 
 
+def _locate(grid, e):
+    """Bracketing index and interpolation fraction for `e` on ascending `grid`,
+    matching numpy's lin-lin np.interp (clamped at both ends). Returns (j, frac)
+    with grid[j-1] < e <= grid[j]."""
+    j = int(np.searchsorted(grid, e))
+    if j <= 0:
+        return 0, 0.0
+    if j >= len(grid):
+        return len(grid) - 1, 1.0
+    e0 = grid[j - 1]
+    e1 = grid[j]
+    frac = 0.0 if e1 == e0 else (e - e0) / (e1 - e0)
+    return j, frac
+
+
+def _read(arr, j, frac):
+    """Linear value on a pre-aligned array at the (j, frac) returned by _locate."""
+    if j <= 0:
+        return arr[0]
+    if frac >= 1.0:
+        return arr[j]
+    a = arr[j - 1]
+    return a + frac * (arr[j] - a)
+
+
 class CrossSectionReader:
     def __init__(self, base_path: str, temperature: str = "294K"):
         self.base_path = base_path
@@ -300,6 +325,11 @@ class CrossSectionReader:
         self.angular_dists = {}
         self.secondary_dists = {}
         self._nu_cache = {}
+        # Per-nuclide "fast tables": every reaction summed onto the nuclide's one
+        # shared energy grid, so a collision costs a single search per channel
+        # instead of one np.interp per reaction MT. Built lazily, exact for the
+        # lin-lin data (sum-then-interp == interp-then-sum on a shared grid).
+        self._fast_tables = {}
 
     def _load_data_to_cache(self, element: str, mt: int):
         # Map common names
@@ -464,35 +494,78 @@ class CrossSectionReader:
             self.secondary_dists[key] = dist
         return self.secondary_dists[key].ref_frame
 
+    # absorption channels summed into Sigma_cap:
+    #   102 (n,g), 103 (n,p), 104 (n,d), 105 (n,t), 106 (n,He3), 107 (n,a)
+    _ABSORPTION_MTS = (102, 103, 104, 105, 106, 107)
+
+    def _build_fast_table(self, element):
+        """Pre-sum every reaction onto the nuclide's shared energy grid: elastic
+        (MT2), neutron-emitting inelastic (16/17/51-91), absorption (102-107) and
+        fission (MT18). Stored once so get_cross_sections does one search/channel.
+        """
+        self._scan_inelastic_mts(element)
+        inel_mts = self._available_inelastic_mts.get(element, [])
+
+        grid = None
+        parts = {}
+        for mt in (2, 18, *inel_mts, *self._ABSORPTION_MTS):
+            d = self.get_cross_section_data(element, mt)
+            if d is None:
+                continue
+            if grid is None:
+                grid = d['energy']
+            if len(d['xs']) == len(grid):
+                parts[mt] = d['xs']
+            # else: a reaction on a different grid length is skipped defensively
+
+        if grid is None:
+            self._fast_tables[element] = None
+            return
+
+        zeros = np.zeros(len(grid))
+        el = parts.get(2, zeros)
+        fis = parts.get(18, zeros)
+        in_ = sum((parts[mt] for mt in inel_mts if mt in parts), np.zeros(len(grid)))
+        cap = sum((parts[mt] for mt in self._ABSORPTION_MTS if mt in parts),
+                  np.zeros(len(grid)))
+        self._fast_tables[element] = {'grid': grid, 'el': el, 'in': in_,
+                                      'cap': cap, 'fis': fis}
+
     def get_cross_sections(self, element, energy, sampler, N, A):
-        from .physics import calculate_E_cm_prime
-        if energy < 10.0: lookup_energy = calculate_E_cm_prime(energy, A, sampler)
-        else: lookup_energy = energy
+        tbl = self._fast_tables.get(element)
+        if tbl is None:
+            if element not in self._fast_tables:
+                self._build_fast_table(element)
+                tbl = self._fast_tables[element]
+            if tbl is None:
+                return 0.0, 0.0, 0.0, 0.0, 0.0
 
-        # elastic
-        mic_el = self.get_cross_section(element, 2, lookup_energy)
-        Sigma_el = self.calculate_macroscopic_xs(mic_el, N)
+        grid = tbl['grid']
+        if energy < 10.0:
+            from .physics import calculate_E_cm_prime
+            lookup_energy = calculate_E_cm_prime(energy, A, sampler)
+        else:
+            lookup_energy = energy
 
-        # neutron-emitting inelastic
-        Sigma_in, _ = self.get_inelastic_components(element, energy, N)
+        # one search shared by the inelastic / capture / fission channels
+        j, frac = _locate(grid, energy)
+        mic_in = _read(tbl['in'], j, frac)
+        mic_cap = _read(tbl['cap'], j, frac)
+        mic_fis = _read(tbl['fis'], j, frac)
+        # elastic uses the (free-gas Doppler) lookup energy below 10 eV
+        if lookup_energy == energy:
+            mic_el = _read(tbl['el'], j, frac)
+        else:
+            je, fe = _locate(grid, lookup_energy)
+            mic_el = _read(tbl['el'], je, fe)
 
-        # absorption: 102 (n,g), 103 (n,p), 104 (n,d), 105 (n,t), 106 (n,He3), 107 (n,a)
-        mic_cap_total = 0.0
-        absorption_mts = [102, 103, 104, 105, 106, 107]
-
-        for mt in absorption_mts:
-            xs = self.get_cross_section(element, mt, energy)
-            mic_cap_total += xs
-
-        Sigma_cap = self.calculate_macroscopic_xs(mic_cap_total, N)
-
-        # fission
-        mic_fis = self.get_cross_section(element, 18, energy)
-        Sigma_fis = self.calculate_macroscopic_xs(mic_fis, N)
-
-        Sigma_total = Sigma_el + Sigma_in + Sigma_cap + Sigma_fis
-
-        return Sigma_el, Sigma_in, Sigma_cap, Sigma_fis, Sigma_total
+        scale = 1e-24 * N
+        Sigma_el = mic_el * scale
+        Sigma_in = mic_in * scale
+        Sigma_cap = mic_cap * scale
+        Sigma_fis = mic_fis * scale
+        return (Sigma_el, Sigma_in, Sigma_cap, Sigma_fis,
+                Sigma_el + Sigma_in + Sigma_cap + Sigma_fis)
 
     def _load_nu(self, element):
         """Cache the total fission neutron yield ν̄(E) table, or None if absent."""

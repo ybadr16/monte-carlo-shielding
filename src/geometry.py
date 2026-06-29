@@ -46,19 +46,45 @@ def get_primitive_surfaces(surface_list):
             primitives.append(surface)
     return primitives
 
-def calculate_nearest_boundary(state, regions, u, v, w):
+def reflect_direction(u, v, w, nx, ny, nz):
+    """Specularly reflect a unit direction (u, v, w) about a surface whose unit
+    normal at the crossing point is (nx, ny, nz): d' = d - 2 (d·n) n.
+
+    The orientation (inward vs outward) of the normal is irrelevant because it
+    enters quadratically, so the same formula works for any surface that exposes
+    a `normal(x, y, z)` method (planes, cylinders, spheres).
+    """
+    dot = u * nx + v * ny + w * nz
+    return (u - 2.0 * dot * nx,
+            v - 2.0 * dot * ny,
+            w - 2.0 * dot * nz)
+
+
+def calculate_nearest_crossing(state, regions, u, v, w):
+    """Like calculate_nearest_boundary, but also returns the surface that is
+    crossed, so the caller can apply its boundary condition (e.g. reflection).
+
+    Returns (nearest_point, nearest_region, nearest_distance, nearest_surface).
+    """
     x, y, z = state["x"], state["y"], state["z"]
     nearest_distance = float("inf")
     nearest_point = None
     nearest_region = None
-    nearest_surface = None  # <--- Initialized here
+    nearest_surface = None
 
     # Iterate over all regions provided (Global, Local, etc.)
     for region in regions:
 
-        # FIX 1: Flatten the surfaces to handle nested CSG regions
-        # If 'region' is a Union of two Boxes, this gets the Planes of those Boxes.
-        primitives = get_primitive_surfaces(region.surfaces)
+        # Flatten the surfaces to handle nested CSG regions: if 'region' is a
+        # Union of two Boxes, this gets the Planes of those Boxes. Cached on the
+        # region (invalidated by add_surface) so it is built once, not per call.
+        primitives = getattr(region, "_prim_cache", None)
+        if primitives is None:
+            primitives = get_primitive_surfaces(region.surfaces)
+            try:
+                region._prim_cache = primitives
+            except AttributeError:
+                pass
 
         for surface in primitives:
             # Solve for distance
@@ -80,16 +106,20 @@ def calculate_nearest_boundary(state, regions, u, v, w):
                         nearest_distance = distance
                         nearest_point = candidate_point
                         nearest_region = region
-
-                        # FIX 2: Actually assign the variable!
-                        # Now the code block at the bottom won't be dead.
                         nearest_surface = surface
 
     # Handle escape
     if nearest_point is None:
-        return None, None, float('inf')
+        return None, None, float('inf'), None
 
-    return nearest_point, nearest_region, nearest_distance
+    return nearest_point, nearest_region, nearest_distance, nearest_surface
+
+
+def calculate_nearest_boundary(state, regions, u, v, w):
+    """Backward-compatible wrapper that drops the crossed surface."""
+    point, region, distance, _surface = calculate_nearest_crossing(
+        state, regions, u, v, w)
+    return point, region, distance
 
 def calculate_void_si_max(mediums):
     # Find the void medium
