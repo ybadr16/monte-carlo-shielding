@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 m_n = 1.674927471e-27  # neutron mass, kg
@@ -152,18 +154,22 @@ def calculate_E_prime(E_cm_prime, initial_energy, A, rng):
     return E_prime, mu_cm
 
 def sample_new_direction_cosines(u, v, w, mu_lab, rng):
-    phi = 2 * np.pi * rng.random()
-    sin_theta = np.sqrt(max(0.0, 1.0 - mu_lab**2))
+    # scalar math (not numpy) keeps the returned cosines as plain floats, so the
+    # geometry that consumes them stays in fast native-float arithmetic.
+    phi = 2.0 * math.pi * rng.random()
+    cphi = math.cos(phi)
+    sphi = math.sin(phi)
+    sin_theta = math.sqrt(max(0.0, 1.0 - mu_lab * mu_lab))
     if abs(w) >= 0.999999:
         sign = 1.0 if w > 0 else -1.0
-        return sin_theta * np.cos(phi), sin_theta * np.sin(phi), sign * mu_lab, phi
-    else:
-        denom = np.sqrt(max(1e-12, 1.0 - w**2))
-        u_new = (mu_lab * u) + (sin_theta / denom) * (u * w * np.cos(phi) - v * np.sin(phi))
-        v_new = (mu_lab * v) + (sin_theta / denom) * (v * w * np.cos(phi) + u * np.sin(phi))
-        w_new = (mu_lab * w) - (sin_theta * denom * np.cos(phi))
-        norm = np.sqrt(u_new**2 + v_new**2 + w_new**2)
-        return u_new/norm, v_new/norm, w_new/norm, phi
+        return sin_theta * cphi, sin_theta * sphi, sign * mu_lab, phi
+    denom = math.sqrt(max(1e-12, 1.0 - w * w))
+    ratio = sin_theta / denom
+    u_new = (mu_lab * u) + ratio * (u * w * cphi - v * sphi)
+    v_new = (mu_lab * v) + ratio * (v * w * cphi + u * sphi)
+    w_new = (mu_lab * w) - (sin_theta * denom * cphi)
+    norm = math.sqrt(u_new * u_new + v_new * v_new + w_new * w_new)
+    return u_new / norm, v_new / norm, w_new / norm, phi
 
 def get_nuclear_temperature(energy, A):
     """Fermi-gas nuclear temperature, T = sqrt(U/a) with a = A/8 MeV^-1. energy, T in eV."""

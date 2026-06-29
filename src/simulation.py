@@ -205,9 +205,15 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
     absorbed_coords_local = []
     children = []
 
-    u = np.sin(state["theta"]) * np.cos(state["phi"])
-    v = np.sin(state["theta"]) * np.sin(state["phi"])
-    w = np.cos(state["theta"])
+    # Keep position and direction as plain Python floats: the geometry hot path
+    # (evaluate / nearest_surface_method / contains) does millions of scalar ops
+    # on these, and float arithmetic is several times faster than np.float64.
+    u = float(np.sin(state["theta"]) * np.cos(state["phi"]))
+    v = float(np.sin(state["theta"]) * np.sin(state["phi"]))
+    w = float(np.cos(state["theta"]))
+    state["x"] = float(state["x"])
+    state["y"] = float(state["y"])
+    state["z"] = float(state["z"])
 
     while True:
         if track_coordinates:
@@ -273,7 +279,7 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
         if Sigma_t <= 0:
             si = float('inf')
         else:
-            si = -np.log(1 - rng.random()) / Sigma_t
+            si = float(-np.log(1 - rng.random()) / Sigma_t)
 
         if si > nearest_distance:
             u, v, w = _advance_across_boundary(
