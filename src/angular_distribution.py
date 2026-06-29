@@ -64,11 +64,18 @@ class AngularDistribution:
         E_low = self.energy_grid[idx]
         E_high = self.energy_grid[idx+1]
         f = (energy_eV - E_low) / (E_high - E_low)
+        f = max(0.0, min(1.0, f))   # clamp to the grid
 
-        # sample mu at each bracketing energy, then interpolate the result
-        mu_low = self._sample_from_block(idx, rng)
-        mu_high = self._sample_from_block(idx + 1, rng)
-        return (1 - f) * mu_low + f * mu_high
+        # Statistical interpolation between the two bracketing incident-energy
+        # blocks: pick ONE block with probability f, then draw a single cosine
+        # from it. Averaging two independent draws (the previous approach) is
+        # NOT sampling the interpolated distribution -- it shrinks the variance
+        # toward mu=0 for mid-grid energies (worst at f=0.5), which for the H
+        # moderator under-spreads the elastic energy loss and softens the
+        # slowing-down spectrum. This matches how the secondary-energy and
+        # Kalbach samplers interpolate (see cross_section_read.py).
+        block = idx if rng.random() > f else idx + 1
+        return self._sample_from_block(block, rng)
 
     def _sample_from_block(self, energy_idx, rng):
         """Samples mu from the specific block for energy index i."""
