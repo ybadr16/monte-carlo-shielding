@@ -264,7 +264,7 @@ def run_particle_kernel(state, reader, mediums, A, N, sampler, region_bounds, tr
         for iso in composition:
             s_el, s_in, s_cap, s_fis, _ = reader.get_cross_sections(
                 iso.element, state["energy"], iso.sampler,
-                iso.number_density, iso.atomic_weight_ratio
+                iso.number_density, iso.atomic_weight_ratio, rng
             )
             iso_data.append((iso, s_el, s_in, s_cap, s_fis))
             Sig_el += s_el
