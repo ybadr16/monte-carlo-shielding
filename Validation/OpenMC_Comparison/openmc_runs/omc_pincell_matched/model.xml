@@ -54,9 +54,9 @@
     </material>
   </materials>
   <geometry>
-    <cell id="1" material="5" region="-1" universe="1"/>
-    <cell id="2" material="6" region="1 -2" universe="1"/>
-    <cell id="3" material="7" region="2 -3" universe="1"/>
+    <cell id="1" material="5" region="-1 4 -5 6 -7 8 -9" universe="1"/>
+    <cell id="2" material="6" region="1 -2 4 -5 6 -7 8 -9" universe="1"/>
+    <cell id="3" material="7" region="2 -3 4 -5 6 -7 8 -9" universe="1"/>
     <cell id="4" material="8" region="3 4 -5 6 -7 8 -9" universe="1"/>
     <surface coeffs="0.0 0.0 0.39218" id="1" type="z-cylinder"/>
     <surface coeffs="0.0 0.0 0.40005" id="2" type="z-cylinder"/>
@@ -70,9 +70,9 @@
   </geometry>
   <settings>
     <run_mode>eigenvalue</run_mode>
-    <particles>300</particles>
-    <batches>40</batches>
-    <inactive>10</inactive>
+    <particles>1200</particles>
+    <batches>60</batches>
+    <inactive>15</inactive>
     <source particle="neutron" strength="1.0" type="independent">
       <space type="box">
         <parameters>-0.39218 -0.39218 -0.62992 0.39218 0.39218 0.62992</parameters>

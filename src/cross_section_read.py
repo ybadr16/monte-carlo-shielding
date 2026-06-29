@@ -1,4 +1,5 @@
 from .physics import calculate_E_cm_prime
+import math
 import os
 import h5py
 import numpy as np
@@ -330,6 +331,9 @@ class CrossSectionReader:
         # instead of one np.interp per reaction MT. Built lazily, exact for the
         # lin-lin data (sum-then-interp == interp-then-sum on a shared grid).
         self._fast_tables = {}
+        # Per-nuclide unresolved-resonance-region (URR) probability tables, read
+        # from the OpenMC-format HDF5 `urr` group. None for nuclides without one.
+        self._urr_cache = {}
 
     def _load_data_to_cache(self, element: str, mt: int):
         # Map common names
@@ -531,7 +535,96 @@ class CrossSectionReader:
         self._fast_tables[element] = {'grid': grid, 'el': el, 'in': in_,
                                       'cap': cap, 'fis': fis}
 
-    def get_cross_sections(self, element, energy, sampler, N, A):
+    def _load_urr(self, element):
+        """Cache the URR probability table for `element`, or None if absent.
+
+        Stored layout matches the OpenMC HDF5 `urr/<temp>` group: `table` has
+        shape (n_energy, 6, n_bands) where the 6 columns are cumulative
+        probability, total, elastic, fission, (n,gamma) and heating.
+        """
+        element_map = {"C": "C0", "Graphite": "C0", "Be": "Be9",
+                       "Al": "Al27", "Fe": "Fe56", "Pb": "Pb208"}
+        actual = element_map.get(element, element)
+        file_path = os.path.join(self.base_path, f"neutron/{actual}.h5")
+        data = None
+        if os.path.exists(file_path):
+            try:
+                with h5py.File(file_path, 'r') as f:
+                    root = f"neutron/{actual}" if f"neutron/{actual}" in f else actual
+                    base = f"{root}/urr"
+                    if base in f:
+                        temps = list(f[base].keys())
+                        T = self.temperature
+                        if T not in temps:
+                            if T == "294K" and "293.6K" in temps:
+                                T = "293.6K"
+                            elif temps:
+                                T = temps[0]
+                        if T in temps:
+                            g = f[f"{base}/{T}"]
+                            energy = g['energy'][:]
+                            data = {
+                                'energy': energy,
+                                'table': g['table'][:],
+                                'interpolation': int(g.attrs.get('interpolation', 2)),
+                                'inelastic': int(g.attrs.get('inelastic', -1)),
+                                'absorption': int(g.attrs.get('absorption', -1)),
+                                'multiply_smooth': bool(g.attrs.get('multiply_smooth', 0)),
+                                'emin': float(energy[0]),
+                                'emax': float(energy[-1]),
+                            }
+            except Exception:
+                data = None
+        self._urr_cache[element] = data
+
+    def _urr_micro_xs(self, urr, energy, mic_el, mic_cap, mic_fis, rng):
+        """Self-shielded (elastic, capture, fission) micro xs sampled from the
+        URR probability table at `energy`. The smooth inelastic competition is
+        left to the caller (added unshielded into the total).
+
+        One random number picks the probability band; the band is located at
+        both bracketing energy points and the cross sections are interpolated
+        between them (lin-lin for interpolation=2, log-log for 5), matching
+        OpenMC. With multiply_smooth the band values are factors on the smooth
+        (infinite-dilution) cross sections; otherwise they are absolute barns.
+        """
+        eg = urr['energy']
+        table = urr['table']
+        n_band = table.shape[2]
+
+        i = int(np.searchsorted(eg, energy, side='right')) - 1
+        i = max(0, min(i, len(eg) - 2))
+        E0, E1 = eg[i], eg[i + 1]
+
+        log_interp = (urr['interpolation'] == 5)
+        if log_interp and E0 > 0 and E1 > 0 and energy > 0 and E1 != E0:
+            f = math.log(energy / E0) / math.log(E1 / E0)
+        else:
+            f = 0.0 if E1 == E0 else (energy - E0) / (E1 - E0)
+        f = max(0.0, min(1.0, f))
+
+        # one random number selects the band at each bracketing energy
+        r = rng.random()
+        b0 = min(int(np.searchsorted(table[i, 0, :], r, side='right')), n_band - 1)
+        b1 = min(int(np.searchsorted(table[i + 1, 0, :], r, side='right')), n_band - 1)
+
+        def band_xs(col):
+            v0 = table[i, col, b0]
+            v1 = table[i + 1, col, b1]
+            if log_interp and v0 > 0.0 and v1 > 0.0:
+                return math.exp((1 - f) * math.log(v0) + f * math.log(v1))
+            return (1 - f) * v0 + f * v1
+
+        el = band_xs(2)   # elastic
+        fis = band_xs(3)  # fission
+        cap = band_xs(4)  # (n,gamma)
+        if urr['multiply_smooth']:
+            el *= mic_el
+            fis *= mic_fis
+            cap *= mic_cap
+        return el, cap, fis
+
+    def get_cross_sections(self, element, energy, sampler, N, A, rng=None):
         tbl = self._fast_tables.get(element)
         if tbl is None:
             if element not in self._fast_tables:
@@ -558,6 +651,19 @@ class CrossSectionReader:
         else:
             je, fe = _locate(grid, lookup_energy)
             mic_el = _read(tbl['el'], je, fe)
+
+        # Unresolved-resonance self-shielding: when an RNG is supplied and the
+        # energy lies in the nuclide's URR, replace the smooth (infinite-dilution)
+        # elastic/capture/fission with a probability-table band sample. The
+        # inelastic competition stays at its smooth value.
+        if rng is not None:
+            urr = self._urr_cache.get(element)
+            if element not in self._urr_cache:
+                self._load_urr(element)
+                urr = self._urr_cache[element]
+            if urr is not None and urr['emin'] <= energy <= urr['emax']:
+                mic_el, mic_cap, mic_fis = self._urr_micro_xs(
+                    urr, energy, mic_el, mic_cap, mic_fis, rng)
 
         scale = 1e-24 * N
         Sigma_el = mic_el * scale

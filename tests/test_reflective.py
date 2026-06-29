@@ -27,7 +27,7 @@ class _AbsorberReader:
     def __init__(self, sigma_a):
         self.sigma_a = sigma_a
 
-    def get_cross_sections(self, element, energy, sampler, number_density, awr):
+    def get_cross_sections(self, element, energy, sampler, number_density, awr, rng=None):
         # (sigma_elastic, sigma_inelastic, sigma_capture, sigma_fission, extra)
         return 0.0, 0.0, self.sigma_a, 0.0, None
 
