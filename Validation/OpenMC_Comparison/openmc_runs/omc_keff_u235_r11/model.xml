@@ -12,8 +12,8 @@
   </geometry>
   <settings>
     <run_mode>eigenvalue</run_mode>
-    <particles>1500</particles>
-    <batches>80</batches>
+    <particles>2000</particles>
+    <batches>120</batches>
     <inactive>20</inactive>
     <source particle="neutron" strength="1.0" type="independent">
       <space type="box">

@@ -1,0 +1,93 @@
+<?xml version='1.0' encoding='utf-8'?>
+<model>
+  <materials>
+    <material depletable="true" id="5" name="UO2_3.1" temperature="294.0">
+      <density units="g/cm3" value="10.24"/>
+      <nuclide ao="0.0002805140992926094" name="U234"/>
+      <nuclide ao="0.031383942862058097" name="U235"/>
+      <nuclide ao="0.9681917895061312" name="U238"/>
+      <nuclide ao="0.0001437535325182134" name="U236"/>
+      <nuclide ao="1.9952412" name="O16"/>
+      <nuclide ao="0.000758" name="O17"/>
+      <nuclide ao="0.0040008" name="O18"/>
+    </material>
+    <material id="6" name="Helium_Gap" temperature="294.0">
+      <density units="g/cm3" value="0.0015"/>
+      <nuclide ao="2e-06" name="He3"/>
+      <nuclide ao="0.999998" name="He4"/>
+    </material>
+    <material id="7" name="Zircaloy" temperature="294.0">
+      <density units="g/cm3" value="6.55"/>
+      <nuclide name="Zr90" wo="0.4975030719418411"/>
+      <nuclide name="Zr91" wo="0.10970127724609834"/>
+      <nuclide name="Zr92" wo="0.1695240925103877"/>
+      <nuclide name="Zr94" wo="0.1755385702549024"/>
+      <nuclide name="Zr96" wo="0.02888298804677048"/>
+      <nuclide name="Sn112" wo="0.00013258696500899892"/>
+      <nuclide name="Sn114" wo="9.18244938630758e-05"/>
+      <nuclide name="Sn115" wo="4.771905899254868e-05"/>
+      <nuclide name="Sn116" wo="0.0020584231441515095"/>
+      <nuclide name="Sn117" wo="0.0010966473380910862"/>
+      <nuclide name="Sn118" wo="0.003487981278597598"/>
+      <nuclide name="Sn119" wo="0.0012475771051862219"/>
+      <nuclide name="Sn120" wo="0.004771539508846636"/>
+      <nuclide name="Sn122" wo="0.000689409486231945"/>
+      <nuclide name="Sn124" wo="0.0008762916210303822"/>
+      <nuclide name="Fe54" wo="0.00011855672267684395"/>
+      <nuclide name="Fe56" wo="0.0019299321043708116"/>
+      <nuclide name="Fe57" wo="4.5367740887167366e-05"/>
+      <nuclide name="Fe58" wo="6.143432065177235e-06"/>
+      <nuclide name="Cr50" wo="4.173686622718313e-05"/>
+      <nuclide name="Cr52" wo="0.000836993623513459"/>
+      <nuclide name="Cr53" wo="9.673586818675183e-05"/>
+      <nuclide name="Cr54" wo="2.4533642072606143e-05"/>
+    </material>
+    <material id="8" name="Borated_Water" temperature="294.0">
+      <density units="g/cm3" value="0.743"/>
+      <nuclide ao="1.99968852" name="H1"/>
+      <nuclide ao="0.00031148" name="H2"/>
+      <nuclide ao="0.9976206" name="O16"/>
+      <nuclide ao="0.000379" name="O17"/>
+      <nuclide ao="0.0020004" name="O18"/>
+      <nuclide ao="0.00019324499999999998" name="B10"/>
+      <nuclide ao="0.000781755" name="B11"/>
+    </material>
+  </materials>
+  <geometry>
+    <cell id="5" material="5" region="-10 13 -14 15 -16 17 -18" universe="2"/>
+    <cell id="6" material="6" region="10 -11 13 -14 15 -16 17 -18" universe="2"/>
+    <cell id="7" material="7" region="11 -12 13 -14 15 -16 17 -18" universe="2"/>
+    <cell id="8" material="8" region="12 13 -14 15 -16 17 -18" universe="2"/>
+    <surface coeffs="0.0 0.0 0.39218" id="10" type="z-cylinder"/>
+    <surface coeffs="0.0 0.0 0.40005" id="11" type="z-cylinder"/>
+    <surface coeffs="0.0 0.0 0.4572" id="12" type="z-cylinder"/>
+    <surface boundary="reflective" coeffs="-0.62992" id="13" type="x-plane"/>
+    <surface boundary="reflective" coeffs="0.62992" id="14" type="x-plane"/>
+    <surface boundary="reflective" coeffs="-0.62992" id="15" type="y-plane"/>
+    <surface boundary="reflective" coeffs="0.62992" id="16" type="y-plane"/>
+    <surface boundary="reflective" coeffs="-0.62992" id="17" type="z-plane"/>
+    <surface boundary="reflective" coeffs="0.62992" id="18" type="z-plane"/>
+  </geometry>
+  <settings>
+    <run_mode>eigenvalue</run_mode>
+    <particles>8000</particles>
+    <batches>140</batches>
+    <inactive>40</inactive>
+    <source particle="neutron" strength="1.0" type="independent">
+      <space type="box">
+        <parameters>-0.39218 -0.39218 -0.62992 0.39218 0.39218 0.62992</parameters>
+      </space>
+      <constraints>
+        <fissionable>true</fissionable>
+      </constraints>
+    </source>
+    <output>
+      <summary>false</summary>
+      <tallies>false</tallies>
+    </output>
+    <seed>2</seed>
+    <verbosity>1</verbosity>
+    <temperature_default>294.0</temperature_default>
+    <temperature_method>nearest</temperature_method>
+  </settings>
+  </model>

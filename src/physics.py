@@ -17,7 +17,7 @@ def get_vectors_and_vcm(initial_energy, A, sampler, rng):
     if initial_energy > 10.0:
         vec_vt = np.zeros(3)
     else:
-        v_t, mu_t = sampler.sample_velocity(vn=v_n, return_mu=True)
+        v_t, mu_t = sampler.sample_velocity(vn=v_n, rng=rng, return_mu=True)
         if v_t > 0:
             phi_t = 2 * np.pi * rng.random()
             sin_t = np.sqrt(max(0.0, 1.0 - mu_t**2))
@@ -135,12 +135,12 @@ def watt_params_for(element):
     return WATT_PARAMS.get(element, DEFAULT_WATT)
 
 
-def calculate_E_cm_prime(initial_energy, A, sampler):
+def calculate_E_cm_prime(initial_energy, A, sampler, rng=None):
     if initial_energy > 10:
         ratio = A / (A + 1)
         return initial_energy * (ratio ** 2)
     v_n = np.sqrt(2 * initial_energy * eV_to_J / m_n)
-    v_t = sampler.sample_velocity(vn=v_n)
+    v_t = sampler.sample_velocity(vn=v_n, rng=rng)
     v_cm = (v_n + A * v_t) / (A + 1)
     v_l_cm = abs(v_n - v_cm)
     return (0.5 * m_n * v_l_cm**2) / eV_to_J

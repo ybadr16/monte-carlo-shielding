@@ -11,6 +11,10 @@ class RNGHandler:
         """Generate a random float in [0, 1)."""
         return self.rng.random()
 
+    def random_array(self, size):
+        """Generate an array of `size` random floats in [0, 1)."""
+        return self.rng.random(size)
+
     def uniform(self, low, high):
         """Generate a random float in the range [low, high)."""
         return self.rng.uniform(low, high)

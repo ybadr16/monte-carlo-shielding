@@ -14,7 +14,8 @@ class MockReader:
 
 # Mock Sampler (Target at rest)
 class MockSampler:
-    def sample_velocity(self, vn=None): return 0.0
+    def sample_velocity(self, vn=None, rng=None, return_mu=False):
+        return (0.0, 0.0) if return_mu else 0.0
 
 def run_consistency_test():
     print("Running Implicit vs Analog Consistency Validation...")

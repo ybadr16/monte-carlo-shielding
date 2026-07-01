@@ -636,7 +636,7 @@ class CrossSectionReader:
         grid = tbl['grid']
         if energy < 10.0:
             from .physics import calculate_E_cm_prime
-            lookup_energy = calculate_E_cm_prime(energy, A, sampler)
+            lookup_energy = calculate_E_cm_prime(energy, A, sampler, rng)
         else:
             lookup_energy = energy
 
