@@ -163,3 +163,113 @@ def test_reflective_plane_returns_beam():
     res = vt.run_streaming(reader, [box], source, np.random.default_rng(1))
     assert res["escaped"].all()
     assert res["collided"].sum() == 0
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3: collision physics, validated statistically against the scalar
+# kernel (same physics, different RNG consumption order).
+# ---------------------------------------------------------------------------
+
+def test_rotate_directions_units_and_mean():
+    rng = np.random.default_rng(5)
+    n = 20000
+    mu = rng.uniform(-1, 1, n)
+    _, _, _, u, v, w = _rays(n, seed=6)
+    un, vn, wn = vt.rotate_directions(u, v, w, mu, rng)
+    np.testing.assert_allclose(un**2 + vn**2 + wn**2, 1.0, atol=1e-9)
+    # the rotated direction's cosine to the incident one must equal mu
+    cosang = u * un + v * vn + w * wn
+    np.testing.assert_allclose(cosang, mu, atol=1e-9)
+
+
+def test_static_elastic_energy_bounds():
+    rng = np.random.default_rng(8)
+    n = 10000
+    A = 55.454
+    E = np.full(n, 1.0e6)
+    mu = rng.uniform(-1, 1, n)
+    E_prime, mu_lab = vt.static_elastic(E, np.full(n, A), mu)
+    alpha = ((A - 1) / (A + 1)) ** 2
+    assert (E_prime >= alpha * E - 1e-6).all() and (E_prime <= E + 1e-6).all()
+    assert (np.abs(mu_lab) <= 1.0).all()
+
+
+def _scalar_reference(reader, nuc, radius, energy, n, seed):
+    """Per-history leaked weight / escape energy from the scalar kernel."""
+    from src.random_number_generator import RNGHandler
+    from src.settings import Settings
+    from src.simulation import simulate_single_particle
+
+    region = Region([Sphere(center=(0, 0, 0), radius=radius)],
+                    name="sphere", element=nuc.element)
+    settings = Settings("shielding", n)
+    src_rng = np.random.default_rng(seed)
+    leaked_w = np.zeros(n)
+    leaked_E = np.zeros(n)
+    for i in range(n):
+        mu = 2 * src_rng.random() - 1
+        state = {"x": 0.0, "y": 0.0, "z": 0.0,
+                 "theta": float(np.arccos(mu)),
+                 "phi": float(2 * np.pi * src_rng.random()),
+                 "energy": energy, "weight": 1.0, "has_interacted": False}
+        res = simulate_single_particle((
+            state, reader, [region], nuc.atomic_weight_ratio,
+            nuc.number_density, nuc.sampler, None, False,
+            RNGHandler(seed + 17 * i), settings))
+        leaked_w[i] = res["final_weight"]
+        leaked_E[i] = res["final_energy"]
+    return leaked_w, leaked_E
+
+
+def _vector_run(reader, nuc, radius, energy, n, seed):
+    region = Region([Sphere(center=(0, 0, 0), radius=radius)],
+                    name="sphere", composition=[nuc])
+    rng = np.random.default_rng(seed)
+    mu = rng.uniform(-1, 1, n)
+    phi = rng.uniform(0, 2 * np.pi, n)
+    s = np.sqrt(1 - mu**2)
+    source = {"x": np.zeros(n), "y": np.zeros(n), "z": np.zeros(n),
+              "u": s * np.cos(phi), "v": s * np.sin(phi), "w": mu,
+              "energy": np.full(n, energy)}
+    from src.settings import Settings
+    return vt.run_transport(reader, [region], source, rng,
+                            Settings("shielding", n))
+
+
+def _z(a, sa, b, sb):
+    return abs(a - b) / np.sqrt(sa**2 + sb**2)
+
+
+@needs_data
+@pytest.mark.parametrize("element,density,amass,awr,radius,energy", [
+    ("Pb208", 11.35, 208.0, 206.19, 10.0, 2.0e6),
+    ("Fe56", 7.874, 55.845, 55.454, 15.0, 2.5e4),
+])
+def test_transport_matches_scalar_kernel(element, density, amass, awr,
+                                         radius, energy):
+    """Elastic-only fast/intermediate spheres: the vector engine must agree
+    with the scalar kernel on leakage and mean escape energy within
+    statistics, and its approximate lanes must never fire."""
+    from src.statistics import escape_statistics
+
+    if not os.path.exists(os.path.join(ENDF, "neutron", f"{element}.h5")):
+        pytest.skip(f"{element} data not present")
+    reader = CrossSectionReader(ENDF)
+    mat = Material(element, density, amass, awr)
+    nuc = Nuclide(element, mat.number_density, awr)
+
+    n_s, n_v = 3000, 30000
+    lw_s, le_s = _scalar_reference(reader, nuc, radius, energy, n_s, seed=101)
+    stats_s = escape_statistics(lw_s, le_s, n_s)
+
+    res = _vector_run(reader, nuc, radius, energy, n_v, seed=202)
+    assert res["counters"]["inelastic_as_elastic"] == 0
+    assert res["counters"]["sub10ev_static"] == 0
+    stats_v = escape_statistics(res["leaked_weight"], res["escape_energy"], n_v)
+
+    z_leak = _z(stats_v["leakage"], stats_v["leakage_sem"],
+                stats_s["leakage"], stats_s["leakage_sem"])
+    z_energy = _z(stats_v["avg_energy"], stats_v["avg_energy_sem"],
+                  stats_s["avg_energy"], stats_s["avg_energy_sem"])
+    assert z_leak < 4.0, (stats_v, stats_s)
+    assert z_energy < 4.0, (stats_v, stats_s)

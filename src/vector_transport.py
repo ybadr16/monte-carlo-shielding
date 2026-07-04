@@ -21,8 +21,10 @@ milestones.
 """
 import numpy as np
 
+from .angular_distribution import AngularDistribution
 from .geometry import get_primitive_surfaces
 from .medium import Plane, Sphere, Cylinder
+from .simulation import THERMAL_KINEMATICS_CUTOFF
 
 EPSILON = 1e-6  # boundary-crossing nudge, matches the scalar kernel
 
@@ -278,10 +280,139 @@ class VectorXS:
             Sfis += np.interp(E, g, tbl["fis"]) * scale
         return Sel, Sin, Scap, Sfis, Sel + Sin + Scap + Sfis
 
+    def per_nuclide(self, energy):
+        """Per-nuclide (elastic, inelastic, capture, fission) macroscopic
+        arrays, each of shape (n_nuclides, n_particles) — the vector analogue
+        of the kernel's iso_data list, used for per-collision isotope
+        selection."""
+        E = np.asarray(energy, dtype=float)
+        el, inl, cap, fis = [], [], [], []
+        for iso, tbl in self.nuclides:
+            scale = 1e-24 * iso.number_density
+            g = tbl["grid"]
+            el.append(np.interp(E, g, tbl["el"]) * scale)
+            inl.append(np.interp(E, g, tbl["in"]) * scale)
+            cap.append(np.interp(E, g, tbl["cap"]) * scale)
+            fis.append(np.interp(E, g, tbl["fis"]) * scale)
+        return np.stack(el), np.stack(inl), np.stack(cap), np.stack(fis)
+
+
+# ---------------------------------------------------------------------------
+# Vectorized collision physics.
+# ---------------------------------------------------------------------------
+
+_ELEMENT_MAP = {"C": "C0", "Graphite": "C0", "Be": "Be9",
+                "Al": "Al27", "Fe": "Fe56", "Pb": "Pb208"}
+
+
+def _get_angular(reader, element):
+    """Reader-cached elastic angular distribution, as in get_elastic_mu."""
+    actual = _ELEMENT_MAP.get(element, element)
+    if actual not in reader.angular_dists:
+        dist = AngularDistribution(reader.base_path, actual, mt=2)
+        dist.load()
+        reader.angular_dists[actual] = dist
+    return reader.angular_dists[actual]
+
+
+def sample_mu_many(dist, energy, rng):
+    """CM elastic cosines for an energy array, vector form of
+    AngularDistribution.sample_mu.
+
+    Same statistical interpolation: each particle picks one bracketing
+    incident-energy block with the linear weight, then inverts that block's
+    tabulated CDF. Particles are grouped by selected block so each distinct
+    block costs one np.interp over its members rather than one call per
+    particle."""
+    E = np.asarray(energy, dtype=float)
+    m = E.size
+    if not dist.loaded:
+        return 2.0 * rng.random(m) - 1.0
+
+    grid = dist.energy_grid
+    idx = np.clip(np.searchsorted(grid, E) - 1, 0, len(grid) - 2)
+    f = np.clip((E - grid[idx]) / (grid[idx + 1] - grid[idx]), 0.0, 1.0)
+    block = np.where(rng.random(m) > f, idx, idx + 1)
+
+    r = rng.random(m)
+    mu = np.empty(m)
+    for b in np.unique(block):
+        sel = block == b
+        start = dist.offsets[b]
+        end = (dist.mu_data.shape[1] if b == len(grid) - 1
+               else dist.offsets[b + 1])
+        mu[sel] = np.interp(r[sel], dist.mu_data[2, start:end],
+                            dist.mu_data[0, start:end])
+    return mu
+
+
+def static_elastic(E, A, mu_cm):
+    """Static-target two-body elastic kinematics for arrays, mirroring the
+    kernel's E >= 10 eV branch: outgoing energy and lab cosine from the CM
+    cosine and the atomic weight ratio."""
+    term = A * A + 1.0 + 2.0 * A * mu_cm
+    E_prime = np.maximum(1e-5, E * term / ((A + 1.0) ** 2))
+    mu_lab = np.clip((1.0 + A * mu_cm) / np.sqrt(term), -1.0, 1.0)
+    return E_prime, mu_lab
+
+
+def rotate_directions(u, v, w, mu_lab, rng):
+    """Rotate unit directions by lab cosine mu_lab with a uniform azimuth —
+    array form of physics.sample_new_direction_cosines, including the
+    near-pole branch and the final renormalization."""
+    m = u.size
+    phi = 2.0 * np.pi * rng.random(m)
+    cphi = np.cos(phi)
+    sphi = np.sin(phi)
+    sin_theta = np.sqrt(np.maximum(0.0, 1.0 - mu_lab * mu_lab))
+
+    denom = np.sqrt(np.maximum(1e-12, 1.0 - w * w))
+    ratio = sin_theta / denom
+    u_new = mu_lab * u + ratio * (u * w * cphi - v * sphi)
+    v_new = mu_lab * v + ratio * (v * w * cphi + u * sphi)
+    w_new = mu_lab * w - sin_theta * denom * cphi
+    norm = np.sqrt(u_new * u_new + v_new * v_new + w_new * w_new)
+    u_new, v_new, w_new = u_new / norm, v_new / norm, w_new / norm
+
+    pole = np.abs(w) >= 0.999999
+    if pole.any():
+        sign = np.where(w > 0, 1.0, -1.0)
+        u_new = np.where(pole, sin_theta * cphi, u_new)
+        v_new = np.where(pole, sin_theta * sphi, v_new)
+        w_new = np.where(pole, sign * mu_lab, w_new)
+    return u_new, v_new, w_new
+
 
 # ---------------------------------------------------------------------------
 # Event loop.
 # ---------------------------------------------------------------------------
+
+def _apply_crossings(bank, gi, px, py, pz, cu, cv, cw, sids, surfaces):
+    """Apply boundary conditions to crossers: transmission nudges past along
+    the flight direction; a reflective surface bounces the direction and steps
+    off along the inward normal (the grazing-incidence reflection-trap fix,
+    mirrored from simulation._advance_across_boundary). Writes positions and
+    directions back into the full-size bank arrays at global indices `gi`."""
+    x, y, z, u, v, w = bank
+    for s_id in np.unique(sids):
+        surf = surfaces[s_id]
+        sm = sids == s_id
+        g = gi[sm]
+        if getattr(surf, "boundary_type", "transmission") == "reflective":
+            nx, ny, nz = surface_normals(surf, px[sm], py[sm], pz[sm])
+            dot = cu[sm] * nx + cv[sm] * ny + cw[sm] * nz
+            ru = cu[sm] - 2.0 * dot * nx
+            rv = cv[sm] - 2.0 * dot * ny
+            rw = cw[sm] - 2.0 * dot * nz
+            step = np.where(ru * nx + rv * ny + rw * nz > 0, EPSILON, -EPSILON)
+            x[g] = px[sm] + step * nx
+            y[g] = py[sm] + step * ny
+            z[g] = pz[sm] + step * nz
+            u[g], v[g], w[g] = ru, rv, rw
+        else:
+            x[g] = px[sm] + EPSILON * cu[sm]
+            y[g] = py[sm] + EPSILON * cv[sm]
+            z[g] = pz[sm] + EPSILON * cw[sm]
 
 class _LegacyIso:
     """Adapter giving a bare `element=` medium the Nuclide attribute interface,
@@ -399,38 +530,220 @@ def run_streaming(reader, mediums, source, rng, legacy=None, max_events=100_000)
         # mirrored from simulation._advance_across_boundary)
         if crosses.any():
             c = np.nonzero(crosses)[0]
-            gi = idx[c]
-            px = xi[c] + dist[c] * ui[c]
-            py = yi[c] + dist[c] * vi[c]
-            pz = zi[c] + dist[c] * wi[c]
-            cu, cv, cw = ui[c], vi[c], wi[c]
-
-            for s_id in np.unique(sid[c]):
-                surf = surfaces[s_id]
-                sm = sid[c] == s_id
-                if getattr(surf, "boundary_type", "transmission") == "reflective":
-                    nx, ny, nz = surface_normals(surf, px[sm], py[sm], pz[sm])
-                    dot = cu[sm] * nx + cv[sm] * ny + cw[sm] * nz
-                    ru = cu[sm] - 2.0 * dot * nx
-                    rv = cv[sm] - 2.0 * dot * ny
-                    rw = cw[sm] - 2.0 * dot * nz
-                    step = np.where(ru * nx + rv * ny + rw * nz > 0,
-                                    EPSILON, -EPSILON)
-                    g = gi[sm]
-                    x[g] = px[sm] + step * nx
-                    y[g] = py[sm] + step * ny
-                    z[g] = pz[sm] + step * nz
-                    u[g], v[g], w[g] = ru, rv, rw
-                else:
-                    g = gi[sm]
-                    x[g] = px[sm] + EPSILON * cu[sm]
-                    y[g] = py[sm] + EPSILON * cv[sm]
-                    z[g] = pz[sm] + EPSILON * cw[sm]
+            _apply_crossings((x, y, z, u, v, w), idx[c],
+                             xi[c] + dist[c] * ui[c],
+                             yi[c] + dist[c] * vi[c],
+                             zi[c] + dist[c] * wi[c],
+                             ui[c], vi[c], wi[c], sid[c], surfaces)
 
     leaked = float(weight[escaped].sum())
     return {
         "escaped": escaped,
         "collided": collided,
         "leakage": leaked / float(weight.sum()),
+        "events": events,
+    }
+
+
+def run_transport(reader, mediums, source, rng, settings, legacy=None,
+                  max_events=1_000_000):
+    """Vectorized fixed-source transport with survival biasing.
+
+    Physics scope (milestone 3): implicit capture with weight-cutoff Russian
+    roulette, per-collision isotope selection weighted by the scattering cross
+    section, and static-target elastic scattering with the tabulated CM
+    angular distribution — the kernel's E >= 10 eV elastic branch. Two lanes
+    are transported approximately and counted so the caller can verify they
+    never fired: a lane that selects an inelastic channel scatters
+    elastically instead (counters["inelastic_as_elastic"]; milestone 4), and
+    a lane below the thermal cutoff stays on the static path instead of
+    free-gas (counters["sub10ev_static"]; milestone 4).
+
+    Returns per-source-history leaked weight and escape energy arrays (feed
+    them to statistics.escape_statistics for batch-means uncertainties), the
+    total absorbed weight, and the counters dict.
+    """
+    x = np.array(source["x"], dtype=float)
+    y = np.array(source["y"], dtype=float)
+    z = np.array(source["z"], dtype=float)
+    u = np.array(source["u"], dtype=float)
+    v = np.array(source["v"], dtype=float)
+    w = np.array(source["w"], dtype=float)
+    E = np.array(source["energy"], dtype=float)
+    n = x.size
+    wgt = np.array(source.get("weight", np.ones(n)), dtype=float)
+
+    if not settings.use_implicit_capture:
+        raise NotImplementedError(
+            "run_transport currently implements survival-biased (shielding) "
+            "mode only; analog/criticality arrives with the fission milestone")
+
+    xs_tables = _medium_xs_tables(reader, mediums, legacy)
+
+    leaked_w = np.zeros(n)
+    leaked_E = np.zeros(n)
+    absorbed = 0.0
+    counters = {"collisions": 0, "inelastic_as_elastic": 0,
+                "sub10ev_static": 0, "killed": 0}
+    alive = np.ones(n, dtype=bool)
+    events = 0
+
+    while alive.any():
+        events += 1
+        if events > max_events:
+            raise RuntimeError(f"exceeded max_events={max_events} with "
+                               f"{int(alive.sum())} particles still alive")
+        idx = np.nonzero(alive)[0]
+        xi, yi, zi = x[idx], y[idx], z[idx]
+        ui, vi, wi = u[idx], v[idx], w[idx]
+
+        midx = resolve_media(mediums, xi, yi, zi)
+        out = midx < 0
+        if out.any():
+            g = idx[out]
+            leaked_w[g] = wgt[g]
+            leaked_E[g] = E[g]
+            alive[g] = False
+            keep = ~out
+            idx = idx[keep]
+            if idx.size == 0:
+                continue
+            xi, yi, zi = xi[keep], yi[keep], zi[keep]
+            ui, vi, wi = ui[keep], vi[keep], wi[keep]
+            midx = midx[keep]
+
+        dist, sid, surfaces = nearest_crossings(mediums, xi, yi, zi, ui, vi, wi)
+        no_cross = ~np.isfinite(dist)
+        if no_cross.any():
+            g = idx[no_cross]
+            leaked_w[g] = wgt[g]
+            leaked_E[g] = E[g]
+            alive[g] = False
+
+        Sigma_t = np.zeros(idx.size)
+        for m_i in np.unique(midx):
+            tbl = xs_tables[m_i]
+            if tbl is None:
+                continue  # void streams
+            in_m = midx == m_i
+            Sigma_t[in_m] = tbl.macroscopic(E[idx][in_m])[4]
+
+        si = np.full(idx.size, np.inf)
+        interacting = Sigma_t > 0
+        si[interacting] = -np.log(1.0 - rng.random(int(interacting.sum()))) \
+            / Sigma_t[interacting]
+
+        live = ~no_cross
+        crosses = live & (si > dist)
+        collides = live & ~crosses
+
+        if crosses.any():
+            c = np.nonzero(crosses)[0]
+            _apply_crossings((x, y, z, u, v, w), idx[c],
+                             xi[c] + dist[c] * ui[c],
+                             yi[c] + dist[c] * vi[c],
+                             zi[c] + dist[c] * wi[c],
+                             ui[c], vi[c], wi[c], sid[c], surfaces)
+
+        if not collides.any():
+            continue
+
+        # advance colliders to the collision site
+        c = np.nonzero(collides)[0]
+        g_all = idx[c]
+        x[g_all] = xi[c] + si[c] * ui[c]
+        y[g_all] = yi[c] + si[c] * vi[c]
+        z[g_all] = zi[c] + si[c] * wi[c]
+
+        for m_i in np.unique(midx[c]):
+            lanes = c[midx[c] == m_i]
+            g = idx[lanes]
+            # a collision site that left the medium is discarded, as in the
+            # scalar kernel ("if not current_medium.contains: continue")
+            inside = contains_many(mediums[m_i], x[g], y[g], z[g])
+            g = g[inside]
+            if g.size == 0:
+                continue
+            tbl = xs_tables[m_i]
+            counters["collisions"] += int(g.size)
+
+            # weight-cutoff Russian roulette, before the implicit absorption
+            low = wgt[g] < settings.weight_cutoff
+            if low.any():
+                p = settings.roulette_survival_prob
+                roll = rng.random(int(low.sum()))
+                lw = g[low]
+                die = lw[roll >= p]
+                boost = lw[roll < p]
+                wgt[boost] /= p
+                alive[die] = False
+                counters["killed"] += int(die.size)
+                g = g[~low | np.isin(g, boost)]
+                if g.size == 0:
+                    continue
+
+            Ew = E[g]
+            el, inl, cap, fis = tbl.per_nuclide(Ew)
+            Ssc = el.sum(axis=0) + inl.sum(axis=0)
+            St = Ssc + cap.sum(axis=0) + fis.sum(axis=0)
+
+            # implicit capture: score the absorbed weight, keep the scatter
+            p_scatter = np.where(St > 0, Ssc / St, 1.0)
+            absorbed += float((wgt[g] * (1.0 - p_scatter)).sum())
+            wgt[g] = wgt[g] * p_scatter
+            dead = wgt[g] <= 0
+            if dead.any():
+                alive[g[dead]] = False
+                counters["killed"] += int(dead.sum())
+                g = g[~dead]
+                if g.size == 0:
+                    continue
+                el, inl = el[:, ~dead], inl[:, ~dead]
+                Ew = E[g]
+
+            # isotope selection weighted by the per-nuclide scattering XS;
+            # single-isotope media pick directly, as in the scalar kernel
+            k = len(tbl.nuclides)
+            m = g.size
+            if k == 1:
+                choice = np.zeros(m, dtype=np.int64)
+            else:
+                wts = el + inl
+                cum = np.cumsum(wts, axis=0)
+                roll = rng.random(m) * cum[-1]
+                choice = np.minimum((cum < roll).sum(axis=0), k - 1)
+
+            lane_idx = np.arange(m)
+            s_el = el[choice, lane_idx]
+            s_in = inl[choice, lane_idx]
+            denom = s_el + s_in
+            p_inel = np.where(denom > 0, s_in / denom, 0.0)
+            inelastic = rng.random(m) < p_inel
+            counters["inelastic_as_elastic"] += int(inelastic.sum())
+            counters["sub10ev_static"] += int(
+                (Ew < THERMAL_KINEMATICS_CUTOFF).sum())
+
+            # elastic scatter: tabulated CM cosine per selected nuclide
+            mu_cm = np.empty(m)
+            A_arr = np.empty(m)
+            for ki in np.unique(choice):
+                sel = choice == ki
+                iso = tbl.nuclides[ki][0]
+                dist_obj = _get_angular(reader, iso.element)
+                mu_cm[sel] = sample_mu_many(dist_obj, Ew[sel], rng)
+                A_arr[sel] = iso.atomic_weight_ratio
+
+            E_prime, mu_lab = static_elastic(Ew, A_arr, mu_cm)
+            un, vn, wn = rotate_directions(u[g], v[g], w[g], mu_lab, rng)
+            E[g] = E_prime
+            u[g], v[g], w[g] = un, vn, wn
+
+    return {
+        "leaked_weight": leaked_w,
+        "escape_energy": leaked_E,
+        "leakage": float(leaked_w.sum()) / float(np.sum(
+            np.array(source.get("weight", np.ones(n)), dtype=float))),
+        "absorbed_weight": absorbed,
+        "counters": counters,
         "events": events,
     }
