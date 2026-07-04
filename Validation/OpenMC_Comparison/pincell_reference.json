@@ -1,0 +1,24 @@
+{
+  "pyneut_5seeds": {
+    "1": 1.27841,
+    "2": 1.27351,
+    "3": 1.26946,
+    "4": 1.27068,
+    "5": 1.27621
+  },
+  "pyneut_mean": 1.27365,
+  "pyneut_sem": 0.00167,
+  "openmc_i40_5seeds": [
+    1.29024,
+    1.28821,
+    1.28897,
+    1.28961,
+    1.28803
+  ],
+  "openmc_mean": 1.28901,
+  "openmc_sem": 0.00042,
+  "openmc_i60_mean_check": 1.28885,
+  "gap_pcm": 1536.0,
+  "z": 8.94,
+  "config": "5v5 seeds, N_pyn=3000 N_omc=8000, gens=140, inactive=40, matched physics"
+}

@@ -70,9 +70,9 @@
   </geometry>
   <settings>
     <run_mode>eigenvalue</run_mode>
-    <particles>1200</particles>
-    <batches>60</batches>
-    <inactive>15</inactive>
+    <particles>300</particles>
+    <batches>40</batches>
+    <inactive>10</inactive>
     <source particle="neutron" strength="1.0" type="independent">
       <space type="box">
         <parameters>-0.39218 -0.39218 -0.62992 0.39218 0.39218 0.62992</parameters>

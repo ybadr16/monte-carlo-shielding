@@ -14,8 +14,8 @@ class MockReader:
 # --- 2. MOCK SAMPLER (THE FIX) ---
 class MockSampler:
     """Simulates a target at 0 Kelvin (Rest)."""
-    def sample_velocity(self, vn=None):
-        return 0.0
+    def sample_velocity(self, vn=None, rng=None, return_mu=False):
+        return (0.0, 0.0) if return_mu else 0.0
 
 def run_reflection_test():
     print("Running Reflection (Albedo) Validation...")

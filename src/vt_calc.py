@@ -34,18 +34,24 @@ class VelocitySampler:
     # The old rejection proposal was uniform on [0,10] with ~10% acceptance, so
     # this removes the dominant per-collision cost in thermal problems.
 
-    def sample_velocity(self, vn, max_attempts=1000, return_mu=False):
+    def sample_velocity(self, vn, rng=None, max_attempts=1000, return_mu=False):
         """Free-gas (SVT) target velocity by acceptance-rejection on the relative speed.
 
         With return_mu, returns (v_t, mu); the speed and its cosine must be used
         together or the speed-angle correlation (detailed balance) is lost.
+
+        `rng` is the per-history `RNGHandler`; when supplied the target-velocity
+        draws come from that reproducible stream rather than the global NumPy RNG,
+        so thermal (sub-cutoff) histories are as seed-reproducible as the rest of
+        the transport. It falls back to the global RNG only when no stream is given.
         """
         beta = self.beta
         p_first = 2.0 / (_SQRT_PI * vn + 2.0)
+        draw = rng.random_array if rng is not None else np.random.random
         for _attempt in range(max_attempts):
             # one batched draw per attempt: r0 branch, r1-r3 speed shape,
             # r4 cosine, r5 acceptance. 1.0 - r keeps log arguments positive.
-            r = np.random.random(6)
+            r = draw(6)
             if r[0] < p_first:
                 x = math.sqrt(-math.log((1.0 - r[1]) * (1.0 - r[2])))
             else:
