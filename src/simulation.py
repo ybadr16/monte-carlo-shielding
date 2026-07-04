@@ -1,6 +1,5 @@
 from .geometry import (
     calculate_nearest_crossing,
-    calculate_void_si_max,
     reflect_direction,
 )
 from .physics import (
@@ -13,9 +12,6 @@ from .physics import (
     watt_params_for,
 )
 import numpy as np
-
-m_n = 1.674927471e-27
-eV_to_J = 1.60217663e-19
 
 # Below this energy elastic scattering uses free-gas vector kinematics (target
 # motion explicit, upscatter allowed); above it the static-target formula with

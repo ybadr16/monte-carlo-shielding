@@ -76,8 +76,9 @@ def run_keff(reader, mediums, initial_source, A, N, sampler, settings,
     "criticality" (analog transport) so fission neutrons are produced. Pass a
     `multiprocessing.Pool` to parallelise the per-generation transport.
 
-    Returns a dict: k_eff, k_sem, active_k (per-active-generation k), and cycles
-    (list of (generation, k, is_active)).
+    Returns a dict: k_eff/k_sem (collision estimator), k_source/k_source_sem
+    (source estimator), active_k (per-active-generation collision k), and
+    cycles (list of (generation, k_collision, k_source, is_active)).
     """
     gen_size = len(initial_source)
     if gen_size == 0:

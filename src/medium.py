@@ -125,6 +125,8 @@ class Plane:
 
 class Cylinder:
     def __init__(self, axis, radius, center, boundary_type="transmission"):
+        if axis not in ("x", "y", "z"):
+            raise ValueError(f"Cylinder axis must be 'x', 'y' or 'z', got {axis!r}")
         self.axis = axis
         self.radius = radius
         self.x0, self.y0, self.z0 = center
