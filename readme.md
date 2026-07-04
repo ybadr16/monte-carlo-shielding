@@ -132,36 +132,39 @@ separately by a coarse-group χ²/dof (GOOD ≤ 2, FAIR ≤ 5, POOR > 5).
 
 | Case | E | Regime | Leak z | E z | Integral | Spectrum |
 |------|--:|--------|------:|----:|:--------:|:--------:|
-| Pb208 elastic (sph R=10) | 2 MeV | fast | 0.9 | 0.2 | OK | GOOD (0.25) |
-| Pb208 (sph R=10) | 5 MeV | fast | 1.0 | 0.3 | OK | GOOD (0.79) |
-| Pb208 (n,2n) (sph R=10) | 14 MeV | fast (n,2n) | 0.3 | 0.4 | OK | POOR (28) |
-| Fe56 slab (d=2 cm) | 14 MeV | fast (n,xn) | 2.6 | 1.4 | WARN | FAIR (4.7) |
-| Fe56 sphere (R=10) | 1 MeV | fast | 1.2 | 0.2 | OK | GOOD (0.71) |
-| Fe56 sphere (R=15) | 25 keV | intermediate | 0.1 | 0.0 | OK | GOOD (1.6) |
-| Be9 (n,2n) (sph R=10) | 14 MeV | fast (n,2n) | 1.1 | 0.3 | OK | POOR (52) |
-| Al27 slab (d=0.5 cm) | 1 MeV | fast | 0.0 | 0.0 | OK | GOOD (1.3) |
-| C12 cyl (R=10,H=20) | 2 MeV | fast | 0.0 | 0.6 | OK | GOOD (1.7) |
+| Pb208 elastic (sph R=10) | 2 MeV | fast | 0.9 | 0.2 | OK | GOOD (0.62) |
+| Pb208 (sph R=10) | 5 MeV | fast | 1.2 | 0.2 | OK | GOOD (0.61) |
+| Pb208 (n,2n) (sph R=10) | 14 MeV | fast (n,2n) | 0.3 | 0.4 | OK | POOR (29) |
+| Fe56 slab (d=2 cm) | 14 MeV | fast (n,xn) | 2.5 | 1.3 | WARN | FAIR (4.8) |
+| Fe56 sphere (R=10) | 1 MeV | fast | 0.5 | 0.7 | OK | GOOD (1.2) |
+| Fe56 sphere (R=15) | 25 keV | intermediate | 0.2 | 0.4 | OK | GOOD (0.75) |
+| Be9 (n,2n) (sph R=10) | 14 MeV | fast (n,2n) | 1.1 | 0.2 | OK | POOR (48) |
+| Al27 slab (d=0.5 cm) | 1 MeV | fast | 0.0 | 0.1 | OK | GOOD (0.77) |
+| C12 cyl (R=10,H=20) | 2 MeV | fast | 0.0 | 1.0 | OK | GOOD (0.80) |
 | O16 sphere (R=20) | 10 MeV | fast | 0.4 | 1.5 | OK | GOOD (1.0) |
-| B10 sphere (R=1) | 1 keV | epithermal | 0.2 | 0.7 | OK | POOR (14) |
-| Cd112 sphere (R=2) | 0.0253 eV | thermal | 0.1 | 1.4 | OK | GOOD (0.03) |
-| C12 sphere (R=5) | 0.0253 eV | thermal | 1.0 | 1.7 | OK | GOOD (0.35) |
+| B10 sphere (R=1) | 1 keV | epithermal | 0.2 | 1.3 | OK | POOR (15) |
+| Cd112 sphere (R=2) | 0.0253 eV | thermal | 0.1 | 1.7 | OK | GOOD (1.4) |
+| C12 sphere (R=5) | 0.0253 eV | thermal | 1.0 | 2.8 | WARN | GOOD (0.35) |
 
-**12 OK, 1 warning, 0 failures.** Fast-neutron transport (the intended domain)
+**11 OK, 2 warnings, 0 failures.** Fast-neutron transport (the intended domain)
 agrees with OpenMC within ~2σ on both leakage and spectrum shape. **Thermal
-scattering is now validated** — free-gas vector kinematics (below 10 eV) let
-neutrons upscatter and equilibrate to the 294 K Maxwellian, so `c12_thermal` and
-`cd112_thermal` now pass with GOOD spectra (they were the suite's two failures
-before the fix; c12 was 86σ off). The (n,2n) cases pass on integrals and mean
+scattering is validated with a disclosed residual** — free-gas vector kinematics
+(below 10 eV) let neutrons upscatter and equilibrate to the 294 K Maxwellian
+(before that fix c12 was 86σ off), but the `c12_thermal` mean escape energy
+retains a genuine ~3 % hot bias (2.8σ at N=10⁴, a stable offset that grows to
+~9σ at N=10⁵): the constant-XS SVT free-gas kernel differs from OpenMC's in a
+way not yet fully resolved. The (n,2n) cases pass on integrals and mean
 escape energy but their **leakage spectrum shape** is POOR. The single-collision
 (n,xn) emission is verified to match OpenMC node-for-node (`validate_secondary.py`,
 χ²/dof ≈ 1) — with the CM→lab boost, unit-base outgoing-energy interpolation and
-correlated emission angle all applied — so the residual is a transport /
-multiple-scattering slowing-down accumulation, not the emission and not the
-Maxwellian fallback (which fires **0 %** of the time).
+correlated emission angle all applied — and the Maxwellian fallback fires **0 %**
+of the time; the residual is dominated by the emitted neutrons being sampled
+independently, with no constraint conserving the total available energy across
+the (n,xn) multiplicity.
 
 Also: **analytic benchmarks 13/13 PASS** (Beer–Lambert attenuation; elastic
 [α,1] / ξ within 0.3σ), the **cross-section reader matches OpenMC to 0.000 %**
-on every channel, and the `pytest` suite has **132 passing** tests.
+on every channel, and the `pytest` suite has **140 passing** tests.
 
 ### Material mixtures vs OpenMC
 
@@ -171,12 +174,12 @@ moderator), with **identical number densities** set in both codes:
 
 | Metric | OpenMC | PyNeut | z |
 |--------|-------:|-------:|--:|
-| leakage | 0.6881 ± 0.0039 | 0.6953 ± 0.0026 | 1.5 |
-| avg escape energy (eV) | 774 407 | 768 060 | 2.6 |
+| leakage | 0.6881 ± 0.0039 | 0.6928 ± 0.0027 | 1.0 |
+| avg escape energy (eV) | 774 407 | 772 338 | 0.8 |
 
 Leakage — the integral the mixture machinery most directly drives — agrees within
-**1.5σ**. The escape-energy/spectrum residual (χ²/dof = 2.1, FAIR) is the same
-documented light-element slowing-down effect, not a mixture-specific defect.
+**1.0σ**, the mean escape energy within **0.8σ**, and the leakage spectrum shape
+is **GOOD** (χ²/dof = 1.3).
 
 ### Criticality (k-eigenvalue) vs OpenMC
 
@@ -187,15 +190,15 @@ geometry, graded by the same k_eff z-score):
 
 | Sphere R (cm) | PyNeut k_eff | OpenMC k_eff | z | Status |
 |--------------:|-------------:|-------------:|--:|:------:|
-| 6.0 (subcritical) | 0.7426 ± 0.0034 | 0.7351 ± 0.0015 | 2.0 | WARNING |
-| 8.7 (≈ critical) | 1.0237 ± 0.0035 | 1.0195 ± 0.0023 | 1.0 | OK |
-| 11.0 (supercritical) | 1.2275 ± 0.0044 | 1.2272 ± 0.0026 | 0.1 | OK |
+| 6.0 (subcritical) | 0.7434 ± 0.0020 | 0.7396 ± 0.0012 | 1.6 | OK |
+| 8.7 (≈ critical) | 1.0264 ± 0.0026 | 1.0243 ± 0.0015 | 0.7 | OK |
+| 11.0 (supercritical) | 1.2283 ± 0.0032 | 1.2283 ± 0.0019 | 0.0 | OK |
 
-PyNeut reproduces the **~8.7 cm bare-U235 critical radius** (k ≈ 1.02) and agrees
-with OpenMC to within statistics near and above critical. The small residual
-bias at the deeply subcritical R = 6 cm (most leakage-dominated, so most sensitive
-to spectrum shape) is consistent with PyNeut's **Watt χ** approximation vs
-OpenMC's tabulated ENDF fission spectrum.
+PyNeut reproduces the **~8.7 cm bare-U235 critical radius** (k ≈ 1.02) and tracks
+OpenMC across the sub-critical, critical and super-critical range within
+**z ≤ 1.6**. The small residual at the deeply subcritical R = 6 cm (most
+leakage-dominated, so most sensitive to spectrum shape) is consistent with
+PyNeut's **Watt χ** approximation vs OpenMC's tabulated ENDF fission spectrum.
 
 **ICSBEP fast-metal benchmarks** (`validate_keff.py --benchmarks`) — the three
 canonical bare-sphere critical assemblies, each run through *both* PyNeut and
@@ -203,12 +206,12 @@ OpenMC and compared to the published k_eff ≡ 1.0000:
 
 | Benchmark | Fissile | PyNeut k_eff | OpenMC k_eff | z (OMC) | z (bench) |
 |-----------|:-------:|-------------:|-------------:|:-------:|:---------:|
-| Godiva (HEU-MET-FAST-001) | U235 | 0.9968 ± 0.0023 | 0.9979 ± 0.0014 | 0.4 | 1.3 |
-| Jezebel-23 (U233-MET-FAST-001) | U233 | 1.0006 ± 0.0021 | 0.9995 ± 0.0014 | 0.4 | 0.3 |
-| Jezebel (PU-MET-FAST-001) | Pu239 | 0.9957 ± 0.0023 | 1.0004 ± 0.0013 | 1.8 | 1.4 |
+| Godiva (HEU-MET-FAST-001) | U235 | 1.0020 ± 0.0022 | 1.0010 ± 0.0015 | 0.4 | 0.8 |
+| Jezebel-23 (U233-MET-FAST-001) | U233 | 0.9975 ± 0.0023 | 0.9986 ± 0.0014 | 0.4 | 1.0 |
+| Jezebel (PU-MET-FAST-001) | Pu239 | 1.0044 ± 0.0025 | 1.0008 ± 0.0015 | 1.2 | 1.4 |
 
 Across **three different fissile isotopes**, PyNeut reproduces each recognized
-benchmark within **z ≤ 1.4 of the evaluated k_eff** and **z ≤ 1.8 of OpenMC** on
+benchmark within **z ≤ 1.4 of the evaluated k_eff** and **z ≤ 1.2 of OpenMC** on
 the identical model. (Requires the ENDF/B-VIII U233/U234/U238 and
 Pu239/Pu240/Pu241/Ga data in `endfb/neutron/`; benchmarks whose isotopes are
 absent are skipped.)
@@ -225,6 +228,10 @@ absent are skipped.)
   grids, and CM-frame reactions are boosted to the lab frame; the emitted
   neutrons are sampled independently and banked/tracked.
 - **Absorption** — MT 102/103/104/105/106/107 summed.
+- **Unresolved-resonance self-shielding** — for heavy nuclides carrying URR
+  probability tables (OpenMC HDF5 `urr` group), a cross-section band is sampled
+  per collision in the unresolved range and drives both the flight and the
+  reaction selection; mean-unbiased outside the self-shielding effect.
 - **Fission** — MT 18; in analog `criticality` mode it emits ν (tabulated total
   ν̄) prompt neutrons per fission with a Watt χ spectrum into the next
   generation's fission bank, enabling k_eff. In `shielding` mode the fission
@@ -240,14 +247,27 @@ absent are skipped.)
   (`validate_secondary.py`: outgoing-energy χ²/dof ≈ 1 at every incident grid
   node) now that the CM→lab frame transform and unit-base outgoing-energy
   interpolation are applied and the correlated emission angle (Law 61 / Kalbach–
-  Mann) is used. The residual is therefore a **transport / multiple-scattering
-  slowing-down** accumulation (PyNeut slightly under-moderates: deficit at low
-  energy, excess at mid energy across many mean-free-paths), not an emission
-  defect, and it is **not** the Maxwellian fallback (0 % usage).
+  Mann) is used, and it is **not** the Maxwellian fallback (0 % usage). The
+  residual is dominated by the **independent sampling of the emitted
+  multiplicity** — no constraint conserves the total available energy across the
+  (n,xn) neutrons — which distorts the emission spectrum while leaving the
+  neutron balance (and hence the integral leakage) correct.
+- **Thermal-lattice k∞ bias (~1500 pcm low)** — on a BEAVRS-style LWR pin cell
+  with matched physics (free-gas, 294 K, no S(α,β)), PyNeut under-predicts
+  OpenMC's k∞ by ≈1500 pcm (z≈9, 5-seed replication;
+  `Validation/OpenMC_Comparison/validate_pincell.py` and
+  `pincell_reference.json`). It is a stable bias, not statistics, traced to
+  residual U-238 resonance self-shielding during slowing-down; the URR
+  probability tables neither cause nor remove it. Fast and intermediate systems
+  are unaffected — treat thermal lattices as approximate.
 - **Thermal scattering is free-gas only (no S(α,β))** — the 294 K free-gas model
   is validated (with upscatter), but molecular/crystalline binding in real
-  moderators (water, graphite) is not modelled.
-- (n,3n) secondary energies use a 50/50 split approximation.
+  moderators (water, graphite) is not modelled; the free-gas escape spectrum
+  itself carries a small disclosed hot bias vs OpenMC (see the C12 thermal case).
+- The neutrons emitted by (n,2n)/(n,3n) are each sampled independently from the
+  single-particle emission distribution, with no constraint conserving the total
+  available energy across the multiplicity — the main driver of the POOR
+  (n,2n) leakage-spectrum shapes.
 - Material mixtures are supported (multiple isotopes per region via
   `Region(composition=[Nuclide, …])` or `Material.mixture`); there is no built-in
   natural-abundance database, so isotopes are specified explicitly.
@@ -260,7 +280,7 @@ absent are skipped.)
 ## Testing
 
 ```bash
-pytest -q                                              # 132 unit tests
+pytest -q                                              # 140 unit tests
 cd Validation/OpenMC_Comparison && python run_all.py   # PyNeut vs OpenMC
 python Validation/OpenMC_Comparison/validate_keff.py   # k-eigenvalue vs OpenMC
 python Validation/analytic_benchmarks.py               # exact analytic checks
@@ -292,10 +312,11 @@ Ordered by engineering leverage (see `docs/index.md` for the full rationale):
    the Watt approximation, separate prompt and delayed ν (time kinetics / β_eff),
    add reflected and thermal-solution benchmarks, and ship a small fissile-isotope
    data subset so the benchmarks are reproducible without a full library download.
-3. **Performance** — profile first (the boundary search and cross-section lookups
-   are the suspected hot paths), then take the cheap wins (local-variable state,
-   `multiprocessing` chunking) before any Numba/`njit` work, which would demand
-   the same array-flattening effort as a full event-vectorised rewrite.
+3. **Performance** — the profile-guided pass is done (unionized per-nuclide
+   energy grids, scalar-float geometry hot path, direct SVT free-gas sampling:
+   ~5–6× faster per history, all exact/verified). Remaining headroom is the
+   cross-nuclide energy-grid union and Numba/`njit` or an event-vectorised
+   rewrite, both of which demand significant array-flattening work.
 4. **Physics breadth** — S(α,β) thermal data, multi-temperature and
    Doppler-broadened libraries, a track-length flux estimator, built-in source
    samplers (Watt, volumetric), a natural-abundance database on top of the

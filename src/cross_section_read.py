@@ -129,14 +129,21 @@ class SecondaryDistribution:
             return
 
     def sample_energy(self, E_in, rng):
-        """Law 4 (uncorrelated) outgoing energy, interpolated between incident nodes."""
+        """Law 4 (uncorrelated) outgoing energy, statistically interpolated
+        between incident nodes: one bracketing node is selected with the linear
+        weight and a single energy is drawn from it. Averaging two independent
+        draws (the previous approach) preserves the mean but shrinks the
+        variance of the sampled distribution — the same defect fixed in
+        AngularDistribution.sample_mu — so this matches how sample_correlated
+        and the Kalbach sampler interpolate."""
         if not self.loaded or self.dist_type == "correlated": return None
         idx = np.searchsorted(self.incident_energy, E_in) - 1
         idx = max(0, min(idx, len(self.incident_energy) - 2))
         E_l, E_h = self.incident_energy[idx], self.incident_energy[idx+1]
         f = 0.0 if E_h == E_l else (E_in - E_l) / (E_h - E_l)
         f = max(0.0, min(1.0, f))   # clamp to the grid
-        return (1 - f) * self._sample_uncorr(idx, rng) + f * self._sample_uncorr(idx+1, rng)
+        sel = idx if rng.random() > f else idx + 1
+        return self._sample_uncorr(sel, rng)
 
     def _sample_uncorr(self, idx, rng):
         start = self.offsets[idx]
