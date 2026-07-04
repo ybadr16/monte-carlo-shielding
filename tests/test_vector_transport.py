@@ -263,8 +263,10 @@ def test_transport_matches_scalar_kernel(element, density, amass, awr,
     stats_s = escape_statistics(lw_s, le_s, n_s)
 
     res = _vector_run(reader, nuc, radius, energy, n_v, seed=202)
-    assert res["counters"]["inelastic_as_elastic"] == 0
-    assert res["counters"]["sub10ev_static"] == 0
+    # elastic-only cases: no inelastic, (n,xn) or thermal free-gas lanes fire
+    assert res["counters"]["nxn_events"] == 0
+    assert res["counters"]["discrete_inelastic_events"] == 0
+    assert res["counters"]["freegas_events"] == 0
     stats_v = escape_statistics(res["leaked_weight"], res["escape_energy"], n_v)
 
     z_leak = _z(stats_v["leakage"], stats_v["leakage_sem"],
@@ -273,3 +275,42 @@ def test_transport_matches_scalar_kernel(element, density, amass, awr,
                   stats_s["avg_energy"], stats_s["avg_energy_sem"])
     assert z_leak < 4.0, (stats_v, stats_s)
     assert z_energy < 4.0, (stats_v, stats_s)
+
+
+# ---------------------------------------------------------------------------
+# Milestone 4: free-gas thermal, discrete inelastic, (n,xn) multiplication.
+# ---------------------------------------------------------------------------
+
+@needs_data
+@pytest.mark.parametrize("element,density,amass,awr,radius,energy,expect", [
+    # thermal graphite sphere: exercises free-gas kinematics + Doppler lookup
+    ("C12", 1.7, 12.011, 11.8969, 5.0, 0.0253, "freegas_events"),
+    # 1 MeV iron sphere: discrete-level inelastic open (first level 847 keV)
+    ("Fe56", 7.874, 55.845, 55.454, 10.0, 1.0e6, "discrete_inelastic_events"),
+    # 14 MeV lead sphere: (n,2n) multiplication, leakage > 1, banked children
+    ("Pb208", 11.35, 208.0, 206.19, 10.0, 1.4e7, "nxn_events"),
+])
+def test_transport_full_physics_matches_scalar(element, density, amass, awr,
+                                               radius, energy, expect):
+    from src.statistics import escape_statistics
+
+    if not os.path.exists(os.path.join(ENDF, "neutron", f"{element}.h5")):
+        pytest.skip(f"{element} data not present")
+    reader = CrossSectionReader(ENDF)
+    mat = Material(element, density, amass, awr)
+    nuc = Nuclide(element, mat.number_density, awr)
+
+    n_s, n_v = 2000, 20000
+    lw_s, le_s = _scalar_reference(reader, nuc, radius, energy, n_s, seed=303)
+    stats_s = escape_statistics(lw_s, le_s, n_s)
+
+    res = _vector_run(reader, nuc, radius, energy, n_v, seed=404)
+    assert res["counters"][expect] > 0, res["counters"]
+    stats_v = escape_statistics(res["leaked_weight"], res["escape_energy"], n_v)
+
+    z_leak = _z(stats_v["leakage"], stats_v["leakage_sem"],
+                stats_s["leakage"], stats_s["leakage_sem"])
+    z_energy = _z(stats_v["avg_energy"], stats_v["avg_energy_sem"],
+                  stats_s["avg_energy"], stats_s["avg_energy_sem"])
+    assert z_leak < 4.0, (element, stats_v, stats_s, res["counters"])
+    assert z_energy < 4.0, (element, stats_v, stats_s, res["counters"])
