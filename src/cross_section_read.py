@@ -5,53 +5,6 @@ import h5py
 import numpy as np
 from .angular_distribution import AngularDistribution
 
-def _normalize_block_to_3xn(arr):
-    """
-    Normalizes any jagged/interleaved array to (3, N) shape:
-    Row 0: Energy/Mu, Row 1: PDF, Row 2: CDF
-    """
-    arr = np.asarray(arr, dtype=float)
-
-    # Case 1: Already 2D
-    if arr.ndim == 2:
-        if arr.shape[0] == 3: return arr
-        if arr.shape[1] == 3: return arr.T
-
-    # Case 2: 1D Interleaved [E1, P1, C1, E2, P2, C2...]
-    flat = arr.flatten()
-    n = len(flat) // 3
-    if n >= 1 and len(flat) >= 3*n:
-        return flat[:3*n].reshape(n, 3).T
-
-    # Fallback: Return safe 3x1 zero block to prevent crashes
-    out = np.zeros((3, 1))
-    if flat.size > 0: out[0, 0] = flat[0]
-    return out
-
-def _normalize_cdf(c):
-    """
-    Ensures CDF is monotonic non-decreasing and normalized 0..1.
-    """
-    c = np.asarray(c, dtype=float).copy()
-    if c.size == 0: return c
-
-    # If it looks like a PDF (not monotonic), integrate it
-    if np.any(c < 0) or (c.size > 1 and not np.all(np.diff(c) >= 0)):
-        c = np.abs(c) # Fix negatives
-        c = np.cumsum(c)
-
-    # Force strict monotonicity
-    c = np.maximum.accumulate(c)
-
-    # Normalize
-    denom = (c[-1] - c[0])
-    if denom <= 1e-14:
-        # Degenerate CDF, return linear spacing
-        return np.linspace(0.0, 1.0, len(c))
-
-    return (c - c[0]) / denom
-
-
 class SecondaryDistribution:
     """Secondary energy-angle reader for (n,xn)/continuum reactions.
 
@@ -642,7 +595,6 @@ class CrossSectionReader:
 
         grid = tbl['grid']
         if energy < 10.0:
-            from .physics import calculate_E_cm_prime
             lookup_energy = calculate_E_cm_prime(energy, A, sampler, rng)
         else:
             lookup_energy = energy
