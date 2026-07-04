@@ -314,3 +314,90 @@ def test_transport_full_physics_matches_scalar(element, density, amass, awr,
                   stats_s["avg_energy"], stats_s["avg_energy_sem"])
     assert z_leak < 4.0, (element, stats_v, stats_s, res["counters"])
     assert z_energy < 4.0, (element, stats_v, stats_s, res["counters"])
+
+
+# ---------------------------------------------------------------------------
+# Milestone 5: URR band sampling, Watt spectrum, analog k-eigenvalue.
+# ---------------------------------------------------------------------------
+
+def test_sample_watt_many_moments():
+    from src.physics import WATT_PARAMS
+    a, b = WATT_PARAMS["U235"]
+    rng = np.random.default_rng(21)
+    E = vt.sample_watt_many(rng, 200_000, a, b)
+    assert (E >= 0).all()
+    mean_expected = 1.5 * a + a * a * b / 4.0   # ~2.03 MeV
+    sem = E.std() / np.sqrt(E.size)
+    assert abs(E.mean() - mean_expected) < 4 * sem
+
+
+@pytest.mark.skipif(
+    not os.path.exists(os.path.join(ENDF, "neutron", "U238.h5")),
+    reason="U238 data not present")
+def test_urr_band_sampling_mean_neutral():
+    """The probability-weighted URR band average must reproduce the smooth
+    (infinite-dilution) cross section — the treatment is unbiased outside the
+    self-shielding effect (paper Section on URR)."""
+    reader = CrossSectionReader(ENDF)
+    nuc = Nuclide("U238", 4.8e22, 236.006)
+    vx = vt.VectorXS(reader, [nuc])
+    n = 200_000
+    E = np.full(n, 5.0e4)  # 50 keV, inside the U238 URR (20-149 keV)
+    smooth_el, _, smooth_cap, smooth_fis = (a[0] for a in vx.per_nuclide(E[:1]))
+
+    el, inl, cap, fis = vx.per_nuclide(E)
+    el, cap, fis = vt._urr_adjust(reader, vx, el, cap, fis, E,
+                                  np.random.default_rng(3))
+    # band samples must actually vary (self-shielding is active)...
+    assert el[0].std() > 0
+    # ...but their mean reproduces the smooth value to a few permille
+    assert abs(el[0].mean() / smooth_el[0] - 1.0) < 5e-3
+    assert abs(cap[0].mean() / smooth_cap[0] - 1.0) < 5e-3
+
+
+@pytest.mark.skipif(
+    not os.path.exists(os.path.join(ENDF, "neutron", "U235.h5")),
+    reason="U235 data not present")
+def test_keff_vector_matches_scalar():
+    """Bare U235 metal sphere near the critical radius: the vector power
+    iteration must agree with the scalar run_keff within statistics."""
+    from src.criticality import run_keff, uniform_sphere_source
+    from src.random_number_generator import RNGHandler
+    from src.settings import Settings
+
+    reader = CrossSectionReader(ENDF)
+    rho, amass, awr, radius = 18.74, 235.0, 233.0248, 8.7
+    mat = Material("U235", rho, amass, awr)
+    nuc = Nuclide("U235", mat.number_density, awr, atomic_mass=amass)
+
+    # scalar reference
+    region_s = Region([Sphere((0, 0, 0), radius)], element="U235", priority=1)
+    settings = Settings("criticality", 1)
+    src_rng = RNGHandler(77)
+    init = uniform_sphere_source((0, 0, 0), radius, 300, src_rng)
+    ref = run_keff(reader, [region_s], init, awr, nuc.number_density,
+                   nuc.sampler, settings, generations=24, inactive=6, seed=5)
+
+    # vector run (larger bank, same physics)
+    region_v = Region([Sphere((0, 0, 0), radius)], composition=[nuc],
+                      priority=1)
+    n = 2000
+    rng = np.random.default_rng(88)
+    r3 = radius * rng.random(n) ** (1.0 / 3.0)
+    mu = rng.uniform(-1, 1, n)
+    phi = rng.uniform(0, 2 * np.pi, n)
+    s = np.sqrt(1 - mu ** 2)
+    mu2 = rng.uniform(-1, 1, n)
+    phi2 = rng.uniform(0, 2 * np.pi, n)
+    s2 = np.sqrt(1 - mu2 ** 2)
+    src = {"x": r3 * s * np.cos(phi), "y": r3 * s * np.sin(phi),
+           "z": r3 * mu,
+           "u": s2 * np.cos(phi2), "v": s2 * np.sin(phi2), "w": mu2,
+           "energy": vt.sample_watt_many(rng, n, 0.988e6, 2.249e-6)}
+    res = vt.run_keff_vector(reader, [region_v], src, settings,
+                             generations=30, inactive=8, seed=9)
+
+    z = _z(res["k_eff"], res["k_sem"], ref["k_eff"], ref["k_sem"])
+    assert z < 4.0, (res["k_eff"], res["k_sem"], ref["k_eff"], ref["k_sem"])
+    # sanity: near-critical sphere, k in a physically sensible window
+    assert 0.95 < res["k_eff"] < 1.10

@@ -713,19 +713,124 @@ def _inelastic_channels(reader, element):
     return tbl
 
 
-def run_transport(reader, mediums, source, rng, settings, legacy=None,
-                  max_events=1_000_000):
-    """Vectorized fixed-source transport with survival biasing.
 
-    Physics (milestone 4): implicit capture with weight-cutoff Russian
-    roulette; per-collision isotope selection; static-target elastic with the
-    tabulated CM angular distribution above the thermal cutoff and free-gas
-    (isotropic-CM, correlated speed-angle) elastic below it, with the
-    sub-10 eV Doppler elastic flight-energy shift in the cross-section
-    lookup; discrete-level inelastic (MT 51-90) with two-body kinematics; and
-    (n,2n)/(n,3n)/continuum (MT 16/17/91) parents and banked children sampled
-    through the scalar SecondaryDistribution readers per lane (these lanes
-    are rare, so the per-lane loop costs little and reuses validated code).
+# ---------------------------------------------------------------------------
+# Criticality support (milestone 5): nu-bar, Watt spectrum, URR band sampling.
+# ---------------------------------------------------------------------------
+
+from .physics import watt_params_for  # noqa: E402
+
+
+def _nu_many(reader, element, energy):
+    """Vector total fission yield nu-bar(E), array form of reader.get_nu."""
+    if element not in reader._nu_cache:
+        reader._load_nu(element)
+    table = reader._nu_cache[element]
+    if table is None:
+        return np.zeros(np.shape(energy))
+    return np.interp(energy, table[0], table[1])
+
+
+def sample_watt_many(rng, m, a, b):
+    """m Watt-spectrum energies (eV) by the Maxwellian-shift method, the
+    array form of physics.sample_watt_spectrum."""
+    r = rng.random((4, m))
+    wmax = a * (-np.log(r[0]) - np.log(r[1]) * np.cos(np.pi * r[2] / 2.0) ** 2)
+    a2b = a * a * b
+    return wmax + a2b / 4.0 + (2.0 * r[3] - 1.0) * np.sqrt(a2b * wmax)
+
+
+def _urr_adjust(reader, vxs, el, cap, fis, E, rng):
+    """Unresolved-resonance probability-table self-shielding, the array form
+    of reader._urr_micro_xs applied in-place to the per-nuclide macroscopic
+    arrays: one random number per lane picks the band at both bracketing
+    energy nodes; band cross sections are interpolated lin-lin or log-log and
+    either replace the smooth values or multiply them (multiply_smooth)."""
+    for ki, (iso, _tbl) in enumerate(vxs.nuclides):
+        if iso.element not in reader._urr_cache:
+            reader._load_urr(iso.element)
+        urr = reader._urr_cache[iso.element]
+        if urr is None:
+            continue
+        in_r = (E >= urr["emin"]) & (E <= urr["emax"])
+        if not in_r.any():
+            continue
+        Er = E[in_r]
+        eg = urr["energy"]
+        table = urr["table"]
+        nb = table.shape[2]
+        i = np.clip(np.searchsorted(eg, Er, side="right") - 1, 0, len(eg) - 2)
+        E0, E1 = eg[i], eg[i + 1]
+
+        log_i = urr["interpolation"] == 5
+        span = E1 - E0
+        f_lin = np.where(span == 0, 0.0,
+                         (Er - E0) / np.where(span == 0, 1.0, span))
+        if log_i:
+            okl = (E0 > 0) & (E1 > 0) & (Er > 0) & (E1 != E0)
+            f = np.where(okl,
+                         np.log(np.where(okl, Er / E0, 1.0))
+                         / np.log(np.where(okl, E1 / E0, np.e)), f_lin)
+        else:
+            f = f_lin
+        f = np.clip(f, 0.0, 1.0)
+
+        r = rng.random(Er.size)
+        b0 = np.minimum((table[i, 0, :] <= r[:, None]).sum(axis=1), nb - 1)
+        b1 = np.minimum((table[i + 1, 0, :] <= r[:, None]).sum(axis=1), nb - 1)
+
+        def band(col):
+            v0 = table[i, col, b0]
+            v1 = table[i + 1, col, b1]
+            out = (1.0 - f) * v0 + f * v1
+            if log_i:
+                pos = (v0 > 0.0) & (v1 > 0.0)
+                if pos.any():
+                    out[pos] = np.exp((1.0 - f[pos]) * np.log(v0[pos])
+                                      + f[pos] * np.log(v1[pos]))
+            return out
+
+        b_el, b_fis, b_cap = band(2), band(3), band(4)
+        if urr["multiply_smooth"]:
+            el[ki, in_r] *= b_el
+            fis[ki, in_r] *= b_fis
+            cap[ki, in_r] *= b_cap
+        else:
+            scale = 1e-24 * iso.number_density
+            el[ki, in_r] = b_el * scale
+            fis[ki, in_r] = b_fis * scale
+            cap[ki, in_r] = b_cap * scale
+    return el, cap, fis
+
+
+def _lane_xs(reader, vxs, E, rng):
+    """Per-nuclide macroscopic XS for an energy array with the full scalar
+    lookup physics: sub-10 eV Doppler elastic flight energy, then URR
+    probability-table band sampling. One evaluation per lane per event feeds
+    both the flight sampling and the collision channel selection, matching
+    the scalar kernel's single iso_data evaluation."""
+    el, inl, cap, fis = _per_nuclide_doppler(vxs, E, rng)
+    el, cap, fis = _urr_adjust(reader, vxs, el, cap, fis, E, rng)
+    return el, inl, cap, fis
+
+
+def run_transport(reader, mediums, source, rng, settings, legacy=None,
+                  fission_bank=None, max_events=1_000_000):
+    """Vectorized fixed-source transport, survival-biased or analog.
+
+    In survival-biased (shielding) mode: implicit capture with weight-cutoff
+    Russian roulette. In analog (criticality) mode the reaction is sampled by
+    its true probability; when `fission_bank` is given (a list), fission is
+    split off capture, nu-bar prompt neutrons are banked per fission as
+    (x, y, z, u, v, w, E) array tuples with Watt energies, and the collision
+    estimator w*sum_i(nu_i Sigma_f,i)/Sigma_t accumulates in
+    counters["fission_production"] — mirroring the scalar kernel.
+
+    Elastic uses the tabulated CM angular distribution above the thermal
+    cutoff and free-gas below; discrete inelastic is two-body; (n,xn) parents
+    and children sample through the scalar SecondaryDistribution readers per
+    lane. Cross-section lookups include the sub-10 eV Doppler elastic shift
+    and URR probability-table self-shielding.
 
     Returns per-source-history leaked weight / escape energy arrays (feed to
     statistics.escape_statistics), total absorbed weight, and counters.
@@ -741,11 +846,7 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
     wgt = np.array(source.get("weight", np.ones(n_hist)), dtype=float)
     hist = np.arange(n_hist)
     src_weight_total = float(wgt.sum())
-
-    if not settings.use_implicit_capture:
-        raise NotImplementedError(
-            "run_transport currently implements survival-biased (shielding) "
-            "mode only; analog/criticality arrives with the fission milestone")
+    analog = not settings.use_implicit_capture
 
     xs_tables = _medium_xs_tables(reader, mediums, legacy)
 
@@ -755,6 +856,9 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
     counters = {"collisions": 0, "freegas_events": 0,
                 "discrete_inelastic_events": 0, "nxn_events": 0,
                 "children_banked": 0, "killed": 0}
+    if fission_bank is not None:
+        counters["fission_production"] = 0.0
+        counters["fission_events"] = 0
     alive = np.ones(n_hist, dtype=bool)
     events = 0
 
@@ -791,10 +895,8 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
             alive[g] = False
 
         # one cross-section evaluation per lane per event, shared by the
-        # flight sampling AND the collision channel selection — the scalar
-        # kernel evaluates iso_data once per collision the same way, which
-        # matters below 10 eV where the elastic lookup is stochastic
-        group = {}  # medium index -> (lane positions in idx, el, inl, cap, fis)
+        # flight sampling AND the collision channel selection (scalar parity)
+        group = {}
         Sigma_t = np.zeros(idx.size)
         col_of = np.full(idx.size, -1, dtype=np.int64)
         for m_i in np.unique(midx):
@@ -802,7 +904,7 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
             if tbl is None:
                 continue  # void streams
             in_m = np.nonzero(midx == m_i)[0]
-            el, inl, cap, fis = _per_nuclide_doppler(tbl, E[idx[in_m]], rng)
+            el, inl, cap, fis = _lane_xs(reader, tbl, E[idx[in_m]], rng)
             group[m_i] = (el, inl, cap, fis)
             col_of[in_m] = np.arange(in_m.size)
             Sigma_t[in_m] = (el.sum(axis=0) + inl.sum(axis=0)
@@ -834,14 +936,12 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
         y[g_all] = yi[c_all] + si[c_all] * vi[c_all]
         z[g_all] = zi[c_all] + si[c_all] * wi[c_all]
 
-        child_buf = []  # (x, y, z, u, v, w, E, wgt, hist) tuples
+        child_buf = []
 
         for m_i in np.unique(midx[c_all]):
             lanes = c_all[midx[c_all] == m_i]
             g = idx[lanes]
             cols = col_of[lanes]
-            # a collision site that left the medium is discarded, as in the
-            # scalar kernel ("if not current_medium.contains: continue")
             inside = contains_many(mediums[m_i], x[g], y[g], z[g])
             g, cols = g[inside], cols[inside]
             if g.size == 0:
@@ -849,52 +949,132 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
             vxs = xs_tables[m_i]
             counters["collisions"] += int(g.size)
 
-            # weight-cutoff Russian roulette, before the implicit absorption
-            low = wgt[g] < settings.weight_cutoff
-            if low.any():
-                p = settings.roulette_survival_prob
-                roll = rng.random(int(low.sum()))
-                lw = g[low]
-                die = lw[roll >= p]
-                wgt[lw[roll < p]] /= p
-                alive[die] = False
-                counters["killed"] += int(die.size)
-                surv = ~low | np.isin(g, lw[roll < p])
-                g, cols = g[surv], cols[surv]
-                if g.size == 0:
-                    continue
-
-            el, inl, cap, fis = (a[:, cols] for a in group[m_i])
+            el, inl, cap, fis = (a[:, cols].copy() for a in group[m_i])
             Ssc = el.sum(axis=0) + inl.sum(axis=0)
             St = Ssc + cap.sum(axis=0) + fis.sum(axis=0)
 
-            # implicit capture: score the absorbed weight, keep the scatter
-            p_scatter = np.where(St > 0, Ssc / St, 1.0)
-            absorbed += float((wgt[g] * (1.0 - p_scatter)).sum())
-            wgt[g] = wgt[g] * p_scatter
-            dead = wgt[g] <= 0
-            if dead.any():
-                alive[g[dead]] = False
-                counters["killed"] += int(dead.sum())
-                keep = ~dead
-                g = g[keep]
-                if g.size == 0:
-                    continue
-                el, inl = el[:, keep], inl[:, keep]
+            # collision estimator of fission production (criticality):
+            # every collision contributes w * sum_i nu_i Sigma_f,i / Sigma_t
+            if fission_bank is not None:
+                fsum = fis.sum(axis=0)
+                if (fsum > 0).any():
+                    nu_sigf = np.zeros(g.size)
+                    for ki, (iso, _t) in enumerate(vxs.nuclides):
+                        nz = fis[ki] > 0
+                        if nz.any():
+                            nu_sigf[nz] += _nu_many(
+                                reader, iso.element, E[g][nz]) * fis[ki][nz]
+                    counters["fission_production"] += float(
+                        (wgt[g] * nu_sigf / np.where(St > 0, St, 1.0)).sum())
 
-            Ew = E[g]
             k = len(vxs.nuclides)
-            m = g.size
-            if k == 1:
-                choice = np.zeros(m, dtype=np.int64)
-            else:
-                cum = np.cumsum(el + inl, axis=0)
-                roll = rng.random(m) * cum[-1]
-                choice = np.minimum((cum < roll).sum(axis=0), k - 1)
+            if analog:
+                # analog: isotope by TOTAL cross section, then the reaction
+                # branch by its true probability; absorption splits fission
+                # off capture when a fission bank is active
+                m = g.size
+                if k == 1:
+                    choice = np.zeros(m, dtype=np.int64)
+                else:
+                    cum = np.cumsum(el + inl + cap + fis, axis=0)
+                    roll = rng.random(m) * cum[-1]
+                    choice = np.minimum((cum < roll).sum(axis=0), k - 1)
+                lane_idx = np.arange(m)
+                s_el = el[choice, lane_idx]
+                s_in = inl[choice, lane_idx]
+                s_cap = cap[choice, lane_idx]
+                s_fis = fis[choice, lane_idx]
+                s_tot = s_el + s_in + s_cap + s_fis
+                p_sc = np.where(s_tot > 0, (s_el + s_in) / np.where(
+                    s_tot > 0, s_tot, 1.0), 1.0)
+                scat = rng.random(m) < p_sc
 
-            lane_idx = np.arange(m)
-            s_el = el[choice, lane_idx]
-            s_in = inl[choice, lane_idx]
+                ab = ~scat
+                if ab.any():
+                    gab = g[ab]
+                    if fission_bank is not None:
+                        sfa, sca = s_fis[ab], s_cap[ab]
+                        den = sfa + sca
+                        fro = rng.random(int(ab.sum()))
+                        isf = (sfa > 0) & (fro < np.where(
+                            den > 0, sfa / np.where(den > 0, den, 1.0), 0.0))
+                    else:
+                        isf = np.zeros(int(ab.sum()), dtype=bool)
+                    capl = gab[~isf]
+                    absorbed += float(wgt[capl].sum())
+                    alive[capl] = False
+                    if isf.any():
+                        fl = gab[isf]
+                        ch_f = choice[ab][isf]
+                        counters["fission_events"] += int(fl.size)
+                        for ki in np.unique(ch_f):
+                            iso = vxs.nuclides[ki][0]
+                            gk = fl[ch_f == ki]
+                            nu_b = _nu_many(reader, iso.element, E[gk])
+                            n_emit = (nu_b + rng.random(gk.size)).astype(np.int64)
+                            tot_e = int(n_emit.sum())
+                            if tot_e == 0:
+                                continue
+                            rep = np.repeat(np.arange(gk.size), n_emit)
+                            a_w, b_w = watt_params_for(iso.element)
+                            mu_f = 2.0 * rng.random(tot_e) - 1.0
+                            phi_f = 2.0 * np.pi * rng.random(tot_e)
+                            sf_ = np.sqrt(1.0 - mu_f * mu_f)
+                            fission_bank.append((
+                                x[gk][rep], y[gk][rep], z[gk][rep],
+                                sf_ * np.cos(phi_f), sf_ * np.sin(phi_f), mu_f,
+                                sample_watt_many(rng, tot_e, a_w, b_w)))
+                        alive[fl] = False
+                    g = g[scat]
+                    if g.size == 0:
+                        continue
+                    choice = choice[scat]
+                    s_el, s_in = s_el[scat], s_in[scat]
+                Ew = E[g]
+                m = g.size
+            else:
+                # weight-cutoff Russian roulette, then implicit capture
+                low = wgt[g] < settings.weight_cutoff
+                if low.any():
+                    p = settings.roulette_survival_prob
+                    roll = rng.random(int(low.sum()))
+                    lw = g[low]
+                    die = lw[roll >= p]
+                    wgt[lw[roll < p]] /= p
+                    alive[die] = False
+                    counters["killed"] += int(die.size)
+                    surv = ~low | np.isin(g, lw[roll < p])
+                    g = g[surv]
+                    if g.size == 0:
+                        continue
+                    el, inl, cap, fis = (a[:, surv] for a in (el, inl, cap, fis))
+                    Ssc, St = Ssc[surv], St[surv]
+
+                p_scatter = np.where(St > 0, Ssc / St, 1.0)
+                absorbed += float((wgt[g] * (1.0 - p_scatter)).sum())
+                wgt[g] = wgt[g] * p_scatter
+                dead = wgt[g] <= 0
+                if dead.any():
+                    alive[g[dead]] = False
+                    counters["killed"] += int(dead.sum())
+                    keep = ~dead
+                    g = g[keep]
+                    if g.size == 0:
+                        continue
+                    el, inl = el[:, keep], inl[:, keep]
+
+                Ew = E[g]
+                m = g.size
+                if k == 1:
+                    choice = np.zeros(m, dtype=np.int64)
+                else:
+                    cum = np.cumsum(el + inl, axis=0)
+                    roll = rng.random(m) * cum[-1]
+                    choice = np.minimum((cum < roll).sum(axis=0), k - 1)
+                lane_idx = np.arange(m)
+                s_el = el[choice, lane_idx]
+                s_in = inl[choice, lane_idx]
+
             denom = s_el + s_in
             p_inel = np.where(denom > 0, s_in / denom, 0.0)
             inelastic = rng.random(m) < p_inel
@@ -927,7 +1107,6 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
                     continue
                 chan = _inelastic_channels(reader, iso.element)
                 if chan is None:
-                    # no channel data: scalar falls back to elastic
                     E_out[sel_in], mu_out[sel_in] = free_gas_elastic(
                         Ew[sel_in], A, iso.sampler, rng)
                     done |= sel_in
@@ -958,8 +1137,6 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
                         Ew[lanes_d], A, q_sel[discrete], rng)
                     done[lanes_d] = True
 
-                # (n,2n)/(n,3n)/continuum: per-lane sampling through the
-                # scalar SecondaryDistribution readers (rare lanes)
                 nxn = ~no_chan & ~discrete
                 for j in np.nonzero(nxn)[0]:
                     lane = sel_pos[j]
@@ -1040,4 +1217,63 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
         "absorbed_weight": absorbed,
         "counters": counters,
         "events": events,
+    }
+
+
+def run_keff_vector(reader, mediums, initial_source, settings,
+                    generations=50, inactive=10, seed=1):
+    """k-eigenvalue power iteration on the vector engine, mirroring
+    criticality.run_keff: each generation transports its source bank in
+    analog mode with a fission bank; the bank is resampled to the nominal
+    size; the collision estimator is the primary k_eff, with the
+    generation-multiplication (source) estimator reported alongside.
+
+    initial_source: dict of arrays (x, y, z, u, v, w, energy). Returns the
+    same dict shape as the scalar run_keff.
+    """
+    from .statistics import mean_sem
+
+    rng = np.random.default_rng(seed)
+    src = {key: np.array(initial_source[key], dtype=float)
+           for key in ("x", "y", "z", "u", "v", "w", "energy")}
+    gen_size = src["x"].size
+    if gen_size == 0:
+        raise ValueError("initial_source must contain at least one neutron")
+
+    cycles = []
+    active_col, active_src = [], []
+    for gen in range(generations):
+        bank = []
+        res = run_transport(reader, mediums, src, rng, settings,
+                            fission_bank=bank)
+        production = res["counters"].get("fission_production", 0.0)
+        if bank:
+            bx, by, bz, bu, bv, bw, bE = (np.concatenate(a) for a in zip(*bank))
+            produced = int(bx.size)
+        else:
+            produced = 0
+        k_col = production / gen_size
+        k_src = produced / gen_size
+        is_active = gen >= inactive
+        cycles.append((gen, k_col, k_src, is_active))
+        if is_active:
+            active_col.append(k_col)
+            active_src.append(k_src)
+        if produced == 0:
+            break
+        pick = rng.choice(produced, size=gen_size,
+                          replace=bool(produced < gen_size))
+        src = {"x": bx[pick], "y": by[pick], "z": bz[pick],
+               "u": bu[pick], "v": bv[pick], "w": bw[pick],
+               "energy": bE[pick]}
+
+    k_eff, k_sem = mean_sem(active_col)
+    k_src_eff, k_src_sem = mean_sem(active_src)
+    return {
+        "k_eff": k_eff,
+        "k_sem": k_sem,
+        "k_source": k_src_eff,
+        "k_source_sem": k_src_sem,
+        "active_k": active_col,
+        "cycles": cycles,
     }
