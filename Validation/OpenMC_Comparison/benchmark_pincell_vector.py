@@ -115,7 +115,11 @@ def main():
         print("  (seed-spread SEM is the honest error bar for this DR~1 lattice)")
         return
 
-    src = pellet_source_arrays(args.n, np.random.default_rng(args.seed))
+    # distinct source seed: run_keff_vector builds its own default_rng(seed) for
+    # transport, so sharing the seed here would correlate the first generation's
+    # source directions with its flight distances (harmless for a reflective
+    # lattice, but avoided for cleanliness).
+    src = pellet_source_arrays(args.n, np.random.default_rng(1000 + args.seed))
     print(f"  single seed={args.seed}\n")
     t0 = time.perf_counter()
     out = vt.run_keff_vector(reader_single(), mediums, src, settings,
