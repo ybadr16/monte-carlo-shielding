@@ -1,0 +1,32 @@
+<?xml version='1.0' encoding='utf-8'?>
+<model>
+  <materials>
+    <material id="2">
+      <density units="g/cm3" value="1.7"/>
+      <nuclide ao="1.0" name="C12"/>
+    </material>
+  </materials>
+  <geometry>
+    <cell id="2" material="2" region="-2" universe="2"/>
+    <surface boundary="vacuum" coeffs="0.0 0.0 0.0 5.0" id="2" type="sphere"/>
+  </geometry>
+  <settings>
+    <run_mode>fixed source</run_mode>
+    <particles>10000</particles>
+    <batches>10</batches>
+    <source particle="neutron" strength="1.0" type="independent">
+      <space type="point">
+        <parameters>0 0 0</parameters>
+      </space>
+      <angle type="isotropic"/>
+      <energy type="discrete">
+        <parameters>0.0253 1.0</parameters>
+      </energy>
+    </source>
+    <output>
+      <summary>false</summary>
+      <tallies>false</tallies>
+    </output>
+    <verbosity>1</verbosity>
+  </settings>
+  </model>
