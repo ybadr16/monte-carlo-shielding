@@ -401,3 +401,127 @@ def test_keff_vector_matches_scalar():
     assert z < 4.0, (res["k_eff"], res["k_sem"], ref["k_eff"], ref["k_sem"])
     # sanity: near-critical sphere, k in a physically sensible window
     assert 0.95 < res["k_eff"] < 1.10
+
+
+# ---------------------------------------------------------------------------
+# Shared-search cross-section interpolation (perf; must stay exact).
+# ---------------------------------------------------------------------------
+
+def test_interp_shared_matches_numpy():
+    """The one-search interpolation must reproduce np.interp (which the four
+    channels used before) across interior, both extrapolation tails, and
+    exact grid-node energies."""
+    rng = np.random.default_rng(0)
+    grid = np.unique(np.sort(rng.uniform(0, 100, 60)))
+    ys = [rng.uniform(0, 10, len(grid)) for _ in range(4)]
+    E = np.concatenate([rng.uniform(-20, 120, 800), grid,
+                        [grid[0], grid[-1]]])
+    got = vt._interp_shared(E, grid, ys)
+    for g, y in zip(got, ys):
+        np.testing.assert_allclose(g, np.interp(E, grid, y),
+                                   rtol=1e-12, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Multiprocessing wrappers (perf; must stay statistically exact).
+# ---------------------------------------------------------------------------
+
+@needs_data
+def test_run_transport_parallel_matches_serial():
+    """Splitting a fixed-source bank across workers must agree with a serial
+    run within statistics, sum the counters, and preserve per-history length."""
+    from src.settings import Settings
+    from src.statistics import escape_statistics
+
+    reader = CrossSectionReader(ENDF)
+    mat = Material("Fe56", 7.874, 55.845, 55.454)
+    nuc = Nuclide("Fe56", mat.number_density, 55.454)
+    region = Region([Sphere((0, 0, 0), 10.0)], composition=[nuc])
+
+    n = 40000
+    rng = np.random.default_rng(3)
+    mu = rng.uniform(-1, 1, n); phi = rng.uniform(0, 2 * np.pi, n)
+    s = np.sqrt(1 - mu ** 2)
+    src = {"x": np.zeros(n), "y": np.zeros(n), "z": np.zeros(n),
+           "u": s * np.cos(phi), "v": s * np.sin(phi), "w": mu,
+           "energy": np.full(n, 1.0e6)}
+
+    serial = vt.run_transport(reader, [region], dict(src),
+                              np.random.default_rng(1), Settings("shielding", n))
+    par = vt.run_transport_parallel(ENDF, [region], dict(src),
+                                    Settings("shielding", n),
+                                    n_workers=4, seed=1)
+
+    assert par["leaked_weight"].size == n            # every history accounted
+    assert par["counters"]["collisions"] > 0
+    ss = escape_statistics(serial["leaked_weight"], serial["escape_energy"], n)
+    sp = escape_statistics(par["leaked_weight"], par["escape_energy"], n)
+    assert _z(sp["leakage"], sp["leakage_sem"],
+              ss["leakage"], ss["leakage_sem"]) < 4.0
+
+
+@needs_data
+def test_run_transport_parallel_one_worker_is_serial():
+    """n_workers=1 must reproduce a serial run bit-for-bit (same seed, same
+    single spawned stream, no chunk boundary)."""
+    from src.settings import Settings
+
+    reader = CrossSectionReader(ENDF)
+    mat = Material("Pb208", 11.35, 208.0, 206.19)
+    nuc = Nuclide("Pb208", mat.number_density, 206.19)
+    region = Region([Sphere((0, 0, 0), 8.0)], composition=[nuc])
+    n = 3000
+    rng = np.random.default_rng(5)
+    mu = rng.uniform(-1, 1, n); phi = rng.uniform(0, 2 * np.pi, n)
+    s = np.sqrt(1 - mu ** 2)
+    src = {"x": np.zeros(n), "y": np.zeros(n), "z": np.zeros(n),
+           "u": s * np.cos(phi), "v": s * np.sin(phi), "w": mu,
+           "energy": np.full(n, 2.0e6)}
+    par1 = vt.run_transport_parallel(ENDF, [region], dict(src),
+                                     Settings("shielding", n),
+                                     n_workers=1, seed=42)
+    # a bare serial run seeded from the same single spawned child
+    child = np.random.SeedSequence(42).spawn(1)[0]
+    serial = vt.run_transport(reader, [region], dict(src),
+                              np.random.default_rng(child),
+                              Settings("shielding", n))
+    np.testing.assert_array_equal(par1["leaked_weight"], serial["leaked_weight"])
+
+
+@pytest.mark.skipif(
+    not os.path.exists(os.path.join(ENDF, "neutron", "U235.h5")),
+    reason="U235 data not present")
+def test_run_keff_parallel_replications():
+    """Seed-parallel k-eigenvalue returns one k per seed and a seed mean that
+    agrees with a serial replica within statistics."""
+    from src.settings import Settings
+
+    reader = CrossSectionReader(ENDF)
+    rho, amass, awr, radius = 18.74, 235.0, 233.0248, 8.7
+    mat = Material("U235", rho, amass, awr)
+    nuc = Nuclide("U235", mat.number_density, awr, atomic_mass=amass)
+    region = Region([Sphere((0, 0, 0), radius)], composition=[nuc], priority=1)
+
+    def make_source(seed, n=1500):
+        rng = np.random.default_rng(seed)
+        r3 = radius * rng.random(n) ** (1.0 / 3.0)
+        mu = rng.uniform(-1, 1, n); phi = rng.uniform(0, 2 * np.pi, n)
+        s = np.sqrt(1 - mu ** 2)
+        mu2 = rng.uniform(-1, 1, n); phi2 = rng.uniform(0, 2 * np.pi, n)
+        s2 = np.sqrt(1 - mu2 ** 2)
+        return {"x": r3 * s * np.cos(phi), "y": r3 * s * np.sin(phi),
+                "z": r3 * mu, "u": s2 * np.cos(phi2), "v": s2 * np.sin(phi2),
+                "w": mu2, "energy": vt.sample_watt_many(rng, n, 0.988e6, 2.249e-6)}
+
+    seeds = [11, 22, 33]
+    sources = [make_source(100 + s) for s in seeds]
+    out = vt.run_keff_parallel(ENDF, [region], sources, Settings("criticality", 1),
+                               seeds, generations=26, inactive=8, n_workers=3)
+
+    assert len(out["per_seed_k"]) == 3
+    assert 0.9 < out["k_mean"] < 1.15
+    # a serial single-seed replica must sit near the parallel seed mean
+    serial = vt.run_keff_vector(reader, [region], make_source(999),
+                                Settings("criticality", 1),
+                                generations=26, inactive=8, seed=7)
+    assert abs(serial["k_eff"] - out["k_mean"]) < 0.05

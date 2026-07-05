@@ -12,21 +12,45 @@ and cross-section lookups here must match it exactly (they are deterministic),
 while full transport is compared statistically, because the per-history order
 of RNG consumption necessarily differs between the two engines.
 
-Current scope (milestone 1): geometry, cross sections, free flights, and
-boundary crossings with transmission/specular reflection. A collision
-terminates the history and is scored as "collided", which is exactly the
-estimator a Beer-Lambert uncollided-transmission measurement needs. Collision
-physics (elastic, free-gas thermal, inelastic, (n,xn)) arrives in the next
-milestones.
+Scope: the full fixed-source and criticality physics of the per-history kernel
+(elastic with tabulated angular data, free-gas thermal motion, discrete
+inelastic, (n,xn) multiplication, URR self-shielding, analog fission banking
+and the k-eigenvalue driver), plus multiprocessing wrappers that run
+independent bank chunks (fixed source) or independent seeds (k-eigenvalue) one
+per core.
 """
 import numpy as np
 
 from .angular_distribution import AngularDistribution
+from .cross_section_read import CrossSectionReader
 from .geometry import get_primitive_surfaces
 from .medium import Plane, Sphere, Cylinder
 from .simulation import THERMAL_KINEMATICS_CUTOFF
 
 EPSILON = 1e-6  # boundary-crossing nudge, matches the scalar kernel
+
+
+def _interp_shared(E, grid, arrays):
+    """Clamped lin--lin interpolation of several y-arrays sharing one grid, at
+    the same energies, with a SINGLE ``searchsorted`` reused across all of them.
+
+    Reproduces ``np.interp`` (constant extrapolation past both ends) and the
+    scalar reader's ``_locate``/``_read`` form ``y[j-1] + frac*(y[j]-y[j-1])``,
+    so the four reaction channels are read with one grid search instead of one
+    per channel. Returns a list of interpolated arrays, one per entry of
+    ``arrays``.
+    """
+    j = np.clip(np.searchsorted(grid, E, side="right"), 1, len(grid) - 1)
+    lo = grid[j - 1]
+    denom = grid[j] - lo
+    safe = denom != 0.0
+    frac = np.clip(np.where(safe, (E - lo) / np.where(safe, denom, 1.0), 0.0),
+                   0.0, 1.0)
+    out = []
+    for y in arrays:
+        a = y[j - 1]
+        out.append(a + frac * (y[j] - a))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -273,11 +297,13 @@ class VectorXS:
         Sfis = np.zeros_like(E)
         for iso, tbl in self.nuclides:
             scale = 1e-24 * iso.number_density
-            g = tbl["grid"]
-            Sel += np.interp(E, g, tbl["el"]) * scale
-            Sin += np.interp(E, g, tbl["in"]) * scale
-            Scap += np.interp(E, g, tbl["cap"]) * scale
-            Sfis += np.interp(E, g, tbl["fis"]) * scale
+            # one grid search shared by all four reaction channels
+            el, inl, cap, fis = _interp_shared(
+                E, tbl["grid"], (tbl["el"], tbl["in"], tbl["cap"], tbl["fis"]))
+            Sel += el * scale
+            Sin += inl * scale
+            Scap += cap * scale
+            Sfis += fis * scale
         return Sel, Sin, Scap, Sfis, Sel + Sin + Scap + Sfis
 
     def per_nuclide(self, energy):
@@ -289,11 +315,13 @@ class VectorXS:
         el, inl, cap, fis = [], [], [], []
         for iso, tbl in self.nuclides:
             scale = 1e-24 * iso.number_density
-            g = tbl["grid"]
-            el.append(np.interp(E, g, tbl["el"]) * scale)
-            inl.append(np.interp(E, g, tbl["in"]) * scale)
-            cap.append(np.interp(E, g, tbl["cap"]) * scale)
-            fis.append(np.interp(E, g, tbl["fis"]) * scale)
+            # one grid search shared by all four reaction channels
+            e, i, c, f = _interp_shared(
+                E, tbl["grid"], (tbl["el"], tbl["in"], tbl["cap"], tbl["fis"]))
+            el.append(e * scale)
+            inl.append(i * scale)
+            cap.append(c * scale)
+            fis.append(f * scale)
         return np.stack(el), np.stack(inl), np.stack(cap), np.stack(fis)
 
 
@@ -1276,4 +1304,137 @@ def run_keff_vector(reader, mediums, initial_source, settings,
         "k_source_sem": k_src_sem,
         "active_k": active_col,
         "cycles": cycles,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Multiprocessing: independent banks / seeds, one bank per core.
+#
+# Each worker builds its OWN CrossSectionReader (h5py handles are not
+# fork-safe and the cached arrays are large, so sharing one reader across
+# processes is both unsafe and wasteful) via a Pool initializer, and draws
+# from its OWN NumPy generator seeded by SeedSequence.spawn, which guarantees
+# statistically independent streams across workers. Because histories (and,
+# for k-eigenvalue, whole replicas) are independent, the parallel result is
+# the serial result up to the RNG stream, so it is exact in the mean and the
+# batch-means / seed-spread uncertainties remain valid.
+# ---------------------------------------------------------------------------
+
+_WORKER = {}
+
+
+def _init_worker(base_path, temperature):
+    _WORKER["reader"] = CrossSectionReader(base_path, temperature)
+
+
+def _merge_fixed_source(results, src_weight_total):
+    """Concatenate per-history arrays in chunk order and sum the scalars, so
+    the merged result matches a single serial run's return shape and its
+    contiguous batch-means grouping."""
+    leaked_w = np.concatenate([r["leaked_weight"] for r in results])
+    escape_e = np.concatenate([r["escape_energy"] for r in results])
+    absorbed = float(sum(r["absorbed_weight"] for r in results))
+    counters = {}
+    for r in results:
+        for k, v in r["counters"].items():
+            counters[k] = counters.get(k, 0) + v
+    return {
+        "leaked_weight": leaked_w,
+        "escape_energy": escape_e,
+        "leakage": float(leaked_w.sum()) / src_weight_total,
+        "absorbed_weight": absorbed,
+        "counters": counters,
+        "events": max(r["events"] for r in results),
+    }
+
+
+def _fixed_source_worker(args):
+    mediums, chunk, settings, seed, legacy = args
+    reader = _WORKER["reader"]
+    return run_transport(reader, mediums, chunk, np.random.default_rng(seed),
+                         settings, legacy=legacy)
+
+
+def run_transport_parallel(base_path, mediums, source, settings,
+                           n_workers=None, seed=0, temperature="294K",
+                           legacy=None):
+    """Fixed-source transport split across processes, one bank chunk per core.
+
+    ``base_path`` is the ENDF directory (each worker builds its own reader).
+    ``source`` is the usual dict of equal-length arrays. The N histories are
+    partitioned into ``n_workers`` contiguous chunks transported in parallel
+    and merged in order, so the result matches a serial ``run_transport`` in
+    the mean with valid batch-means statistics. Independent per-worker RNG
+    comes from ``SeedSequence(seed).spawn``.
+    """
+    import multiprocessing as mp
+
+    n = int(np.asarray(source["x"]).size)
+    n_workers = n_workers or mp.cpu_count()
+    n_workers = max(1, min(n_workers, n))
+    src_weight_total = float(np.asarray(
+        source.get("weight", np.ones(n)), dtype=float).sum())
+
+    splits = np.array_split(np.arange(n), n_workers)
+    seeds = np.random.SeedSequence(seed).spawn(len(splits))
+    args = []
+    for sl, sd in zip(splits, seeds):
+        chunk = {k: np.asarray(v, dtype=float)[sl] for k, v in source.items()}
+        args.append((mediums, chunk, settings, sd, legacy))
+
+    if n_workers == 1:
+        _init_worker(base_path, temperature)
+        results = [_fixed_source_worker(a) for a in args]
+    else:
+        with mp.Pool(n_workers, initializer=_init_worker,
+                     initargs=(base_path, temperature)) as pool:
+            results = pool.map(_fixed_source_worker, args)
+    return _merge_fixed_source(results, src_weight_total)
+
+
+def _keff_worker(args):
+    mediums, source, settings, gens, inactive, seed = args
+    reader = _WORKER["reader"]
+    return run_keff_vector(reader, mediums, source, settings,
+                           generations=gens, inactive=inactive, seed=seed)
+
+
+def run_keff_parallel(base_path, mediums, sources, settings, seeds,
+                      generations=50, inactive=10, temperature="294K",
+                      n_workers=None):
+    """Independent-replication k-eigenvalue: one power iteration per seed, run
+    in parallel, one replica per core.
+
+    ``sources`` is a list of initial-source dicts (one per replica) and
+    ``seeds`` the matching transport seeds; both have length = number of
+    replicas. Returns the per-seed ``run_keff_vector`` results plus the seed
+    mean and the seed-spread standard error --- the honest error bar for a
+    near-unity dominance-ratio lattice, where the single-run SEM understates
+    the variance (as used for the BEAVRS pin cell).
+    """
+    import multiprocessing as mp
+
+    if len(sources) != len(seeds):
+        raise ValueError("sources and seeds must have the same length")
+    n_workers = n_workers or min(mp.cpu_count(), len(seeds))
+    args = [(mediums, src, settings, generations, inactive, sd)
+            for src, sd in zip(sources, seeds)]
+
+    if n_workers == 1 or len(seeds) == 1:
+        _init_worker(base_path, temperature)
+        results = [_keff_worker(a) for a in args]
+    else:
+        with mp.Pool(n_workers, initializer=_init_worker,
+                     initargs=(base_path, temperature)) as pool:
+            results = pool.map(_keff_worker, args)
+
+    ks = np.array([r["k_eff"] for r in results], dtype=float)
+    k_mean = float(ks.mean())
+    k_spread_sem = (float(ks.std(ddof=1) / np.sqrt(ks.size))
+                    if ks.size > 1 else float("nan"))
+    return {
+        "k_mean": k_mean,
+        "k_spread_sem": k_spread_sem,
+        "per_seed_k": ks.tolist(),
+        "per_seed": results,
     }

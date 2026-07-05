@@ -54,53 +54,85 @@ def pellet_source_arrays(n, rng):
     }
 
 
+def _compare_to_refs(k, sem, label):
+    if not os.path.exists(REF_JSON):
+        return
+    ref = json.load(open(REF_JSON))
+    kp, sp = ref['pyneut_mean'], ref['pyneut_sem']
+    ko, so = ref['openmc_mean'], ref['openmc_sem']
+    print(f"\n  {label} k_inf = {k:.5f} ± {sem:.5f}")
+    print(f"  vs scalar PyNeut 5-seed ref {kp:.5f} ± {sp:.5f} : "
+          f"dk = {1e5 * (k - kp):+,.0f} pcm, z = {abs(k-kp)/np.hypot(sem,sp):.2f}")
+    print(f"  vs OpenMC 5-seed ref        {ko:.5f} ± {so:.5f} : "
+          f"dk = {1e5 * (k - ko):+,.0f} pcm, z = {abs(k-ko)/np.hypot(sem,so):.2f}")
+
+
 def main():
     ap = argparse.ArgumentParser(description='Vector-engine BEAVRS pin cell')
     ap.add_argument('--n', type=int, default=3000, help='neutrons/generation')
     ap.add_argument('--gens', type=int, default=140, help='total generations')
     ap.add_argument('--inactive', type=int, default=40, help='inactive generations')
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--seeds', type=int, default=1,
+                    help='number of independent replicas (>1 runs them in '
+                         'parallel, one per core, and reports the seed-spread '
+                         'error bar)')
+    ap.add_argument('--workers', type=int, default=None,
+                    help='parallel workers (default: one per replica)')
     ap.add_argument('--quick', action='store_true', help='fast smoke test')
     args = ap.parse_args()
     if args.quick:
         args.n, args.gens, args.inactive = 500, 30, 10
 
-    print(f"\nVector-engine BEAVRS HZP pin cell (matched physics: free-gas H, "
-          f"294 K, no S(a,b))\n  N={args.n}/gen, {args.gens} gens, "
-          f"{args.inactive} inactive, seed={args.seed}\n")
-
     matched = build_openmc_materials(temperature=294.0, thermal=False)
     comps = {k: pyneut_composition(m, 294.0) for k, m in matched.items()}
     mediums = pyneut_mediums(comps)
-    reader = CrossSectionReader(ENDF_PATH, temperature='294K')
     settings = Settings('criticality', 1)
 
-    src = pellet_source_arrays(args.n, np.random.default_rng(args.seed))
+    print(f"\nVector-engine BEAVRS HZP pin cell (matched physics: free-gas H, "
+          f"294 K, no S(a,b))\n  N={args.n}/gen, {args.gens} gens, "
+          f"{args.inactive} inactive")
 
+    if args.seeds > 1:
+        # independent replications, one power iteration per core
+        seeds = [args.seed + i for i in range(args.seeds)]
+        sources = [pellet_source_arrays(args.n, np.random.default_rng(1000 + s))
+                   for s in seeds]
+        print(f"  {args.seeds} independent seeds in parallel "
+              f"({args.workers or args.seeds} workers)\n")
+        t0 = time.perf_counter()
+        out = vt.run_keff_parallel(ENDF_PATH, mediums, sources, settings, seeds,
+                                   generations=args.gens, inactive=args.inactive,
+                                   n_workers=args.workers)
+        dt = time.perf_counter() - t0
+        n_hist = args.n * args.gens * args.seeds
+        ks = out['per_seed_k']
+        print("  per-seed k_inf : " + "  ".join(f"{k:.5f}" for k in ks))
+        print(f"  wall time      : {dt:.1f} s for {n_hist:,} histories "
+              f"across {args.seeds} replicas = {n_hist / dt:,.0f} hist/s")
+        _compare_to_refs(out['k_mean'], out['k_spread_sem'],
+                         f"{args.seeds}-seed mean (seed-spread SEM):")
+        print("  (seed-spread SEM is the honest error bar for this DR~1 lattice)")
+        return
+
+    src = pellet_source_arrays(args.n, np.random.default_rng(args.seed))
+    print(f"  single seed={args.seed}\n")
     t0 = time.perf_counter()
-    out = vt.run_keff_vector(reader, mediums, src, settings,
+    out = vt.run_keff_vector(reader_single(), mediums, src, settings,
                              generations=args.gens, inactive=args.inactive,
                              seed=args.seed)
     dt = time.perf_counter() - t0
     n_hist = args.n * args.gens
-
     print(f"  k_inf (collision) : {out['k_eff']:.5f} ± {out['k_sem']:.5f}")
     print(f"  k_inf (source)    : {out['k_source']:.5f} ± {out['k_source_sem']:.5f}")
     print(f"  wall time         : {dt:.1f} s for {n_hist:,} histories "
           f"= {n_hist / dt:,.0f} hist/s (single core)")
+    _compare_to_refs(out['k_eff'], out['k_sem'], "single-seed")
+    print("  (single-seed run; the DR~1 lattice inflates single-run variance)")
 
-    if os.path.exists(REF_JSON):
-        ref = json.load(open(REF_JSON))
-        kp, sp = ref['pyneut_mean'], ref['pyneut_sem']
-        ko, so = ref['openmc_mean'], ref['openmc_sem']
-        zs = abs(out['k_eff'] - kp) / np.hypot(out['k_sem'], sp)
-        zo = abs(out['k_eff'] - ko) / np.hypot(out['k_sem'], so)
-        print(f"\n  vs scalar PyNeut 5-seed ref {kp:.5f} ± {sp:.5f} : "
-              f"dk = {1e5 * (out['k_eff'] - kp):+,.0f} pcm, z = {zs:.2f}")
-        print(f"  vs OpenMC 5-seed ref        {ko:.5f} ± {so:.5f} : "
-              f"dk = {1e5 * (out['k_eff'] - ko):+,.0f} pcm, z = {zo:.2f}")
-        print("  (single-seed run; the DR~1 lattice inflates single-run "
-              "variance — seed-spread SEMs are the honest error bar)")
+
+def reader_single():
+    return CrossSectionReader(ENDF_PATH, temperature='294K')
 
 
 if __name__ == '__main__':
