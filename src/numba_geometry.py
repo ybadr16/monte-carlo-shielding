@@ -116,6 +116,31 @@ def surf_distance(stype, p, x, y, z, u, v, w):
     return lo
 
 
+@njit(fastmath=False, cache=True)
+def surf_normal(stype, p, x, y, z):
+    """Unit surface normal at (x,y,z); mirror of medium.py normal()."""
+    if stype == PLANE:
+        return p[0], p[1], p[2]  # already normalized
+    if stype == SPHERE:
+        dx = x - p[0]; dy = y - p[1]; dz = z - p[2]
+        mag = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if mag == 0.0:
+            return 0.0, 0.0, 0.0
+        return dx / mag, dy / mag, dz / mag
+    ax = p[4]
+    if ax == 0.0:      # x-axis cylinder: normal in (y,z)
+        dy = y - p[1]; dz = z - p[2]
+        mag = math.sqrt(dy * dy + dz * dz)
+        return (0.0, 0.0, 0.0) if mag == 0.0 else (0.0, dy / mag, dz / mag)
+    if ax == 1.0:      # y-axis: normal in (x,z)
+        dx = x - p[0]; dz = z - p[2]
+        mag = math.sqrt(dx * dx + dz * dz)
+        return (0.0, 0.0, 0.0) if mag == 0.0 else (dx / mag, 0.0, dz / mag)
+    dx = x - p[0]; dy = y - p[1]   # z-axis: normal in (x,y)
+    mag = math.sqrt(dx * dx + dy * dy)
+    return (0.0, 0.0, 0.0) if mag == 0.0 else (dx / mag, dy / mag, 0.0)
+
+
 @njit(cache=True)
 def contains_medium(m, tok, tok_off, stype, params, x, y, z):
     """Evaluate medium ``m``'s postfix CSG expression at a point.
