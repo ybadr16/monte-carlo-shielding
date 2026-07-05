@@ -1,4 +1,3 @@
-from .physics import calculate_E_cm_prime
 import math
 import os
 import h5py
@@ -594,22 +593,19 @@ class CrossSectionReader:
                 return 0.0, 0.0, 0.0, 0.0, 0.0
 
         grid = tbl['grid']
-        if energy < 10.0:
-            lookup_energy = calculate_E_cm_prime(energy, A, sampler, rng)
-        else:
-            lookup_energy = energy
-
-        # one search shared by the inelastic / capture / fission channels
+        # The OpenMC-format files are already NJOY free-gas-broadened to the
+        # library temperature, so the flight cross section is the tabulated
+        # sigma(E, T) read at the lab energy directly. (The kernel previously
+        # re-looked-up the elastic XS at a free-gas-shifted relative energy
+        # below 10 eV, which broadened already-broadened data; that double
+        # count, together with the SVT p_first defect in vt_calc, produced the
+        # thermal free-gas escape-energy bias. Both are now fixed and the
+        # thermal motion enters only through the collision kinematics.)
         j, frac = _locate(grid, energy)
+        mic_el = _read(tbl['el'], j, frac)
         mic_in = _read(tbl['in'], j, frac)
         mic_cap = _read(tbl['cap'], j, frac)
         mic_fis = _read(tbl['fis'], j, frac)
-        # elastic uses the (free-gas Doppler) lookup energy below 10 eV
-        if lookup_energy == energy:
-            mic_el = _read(tbl['el'], j, frac)
-        else:
-            je, fe = _locate(grid, lookup_energy)
-            mic_el = _read(tbl['el'], je, fe)
 
         # Unresolved-resonance self-shielding: when an RNG is supplied and the
         # energy lies in the nuclide's URR, replace the smooth (infinite-dilution)

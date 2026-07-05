@@ -21,7 +21,7 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.cross_section_read import CrossSectionReader
 from src.vt_calc import VelocitySampler
 from src.simulation import simulate_single_particle
-from src.material import Material
+from src.material import Material, NEUTRON_MASS_AMU
 from src.medium import Region, Sphere, Cylinder, Box, Plane
 from src.random_number_generator import RNGHandler
 from src.settings import Settings
@@ -114,7 +114,13 @@ def run_pyneut(case, n_particles=10000, n_batches=N_BATCHES):
         {leakage, leakage_sem, avg_energy, avg_energy_sem}.
     """
     reader = get_reader()
-    mat = Material(case['el'], case['rho'], case['A'], case['A'])
+    # case['A'] is the atomic-weight ratio (mass / neutron mass). The molar mass
+    # in g/mol is A * m_neutron, NOT A: passing A as the mass makes the free-gas
+    # sampler's target ~0.9% too light and its number density ~0.9% too high,
+    # which for a light moderator biases the thermal escape spectrum hot. OpenMC
+    # uses the true isotopic mass, so the mass must be A * NEUTRON_MASS_AMU here.
+    mat = Material(case['el'], case['rho'],
+                   case['A'] * NEUTRON_MASS_AMU, case['A'])
     N = mat.number_density
     A = case['A']
 

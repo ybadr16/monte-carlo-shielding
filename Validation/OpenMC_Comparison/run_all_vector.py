@@ -32,7 +32,7 @@ from _common import ENDF_PATH, PROJECT_ROOT, energy_grid, N_BATCHES  # noqa: E40
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.cross_section_read import CrossSectionReader          # noqa: E402
-from src.material import Material, Nuclide                     # noqa: E402
+from src.material import Material, Nuclide, NEUTRON_MASS_AMU   # noqa: E402
 from src.medium import Region, Sphere, Cylinder, Box, Plane    # noqa: E402
 from src.random_number_generator import RNGHandler             # noqa: E402
 from src.settings import Settings                              # noqa: E402
@@ -93,9 +93,12 @@ def build_geometry(case, nuc=None):
 
 def run_vector_case(reader, case, n):
     """Vector-engine run: returns (stats dict, histories/s)."""
-    mat = Material(case['el'], case['rho'], case['A'], case['A'])
-    nuc = Nuclide(case['el'], mat.number_density, case['A'],
-                  atomic_mass=case['A'])
+    # case['A'] is the atomic-weight ratio; the molar mass is A * m_neutron
+    # (see _common.run_pyneut). Passing A as the mass makes the free-gas target
+    # ~0.9% too light and biases a light moderator's thermal spectrum hot.
+    amass = case['A'] * NEUTRON_MASS_AMU
+    mat = Material(case['el'], case['rho'], amass, case['A'])
+    nuc = Nuclide(case['el'], mat.number_density, case['A'], atomic_mass=amass)
     mediums = build_geometry(case, nuc=nuc)
     settings = Settings('shielding', n)
 
