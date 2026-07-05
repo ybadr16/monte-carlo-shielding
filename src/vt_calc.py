@@ -46,7 +46,12 @@ class VelocitySampler:
         the transport. It falls back to the global RNG only when no stream is given.
         """
         beta = self.beta
-        p_first = 2.0 / (_SQRT_PI * vn + 2.0)
+        # Branch probability of the SVT method, in the DIMENSIONLESS neutron
+        # speed y = beta*vn (the ratio of neutron to target thermal speed).
+        # (An earlier version used the raw speed vn (~10^3 m/s), forcing
+        # p_first ~ 0, which under-sampled the x^3 e^{-x^2} target-speed shape
+        # and biased the free-gas thermal spectrum; see cross_section_read.)
+        p_first = 2.0 / (_SQRT_PI * vn * beta + 2.0)
         draw = rng.random_array if rng is not None else np.random.random
         for _attempt in range(max_attempts):
             # one batched draw per attempt: r0 branch, r1-r3 speed shape,

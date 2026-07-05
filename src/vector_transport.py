@@ -589,16 +589,13 @@ def sample_velocity_many(sampler, vn, rng, return_mu=False, max_iter=1000):
     """Vector free-gas SVT target speeds (and correlated cosines), the array
     form of VelocitySampler.sample_velocity with masked-lane rejection.
 
-    NOTE: this reproduces the scalar sampler exactly, INCLUDING the disclosed
-    p_first branch-probability defect (raw vn instead of the dimensionless
-    vn*beta — see the paper's free-gas discussion). The vector engine must
-    match the released scalar physics; the correction lands in both engines
-    together once the free-gas root cause closes.
+    Reproduces the scalar VelocitySampler.sample_velocity, including the SVT
+    branch probability in the dimensionless neutron speed y = beta*vn.
     """
     vn = np.asarray(vn, dtype=float)
     m = vn.size
     beta = sampler.beta
-    p_first = 2.0 / (np.sqrt(np.pi) * vn + 2.0)
+    p_first = 2.0 / (np.sqrt(np.pi) * vn * beta + 2.0)
     v_t = np.empty(m)
     mu = np.empty(m)
     active = np.ones(m, dtype=bool)
@@ -688,25 +685,6 @@ def discrete_inelastic(E, A, Q, rng):
     zeros = np.zeros_like(E)
     return _isotropic_cm_exit(zeros, zeros, Vz, mag_prime,
                               zeros, zeros, vcm_z, rng)
-
-
-def _per_nuclide_doppler(vxs, E, rng):
-    """VectorXS.per_nuclide plus the scalar kernel's sub-10 eV elastic
-    flight-energy shift: below 10 eV the elastic lookup energy is the
-    collinear free-gas relative energy (physics.calculate_E_cm_prime),
-    sampled per lane per nuclide from that nuclide's velocity sampler."""
-    el, inl, cap, fis = vxs.per_nuclide(E)
-    th = E < 10.0
-    if th.any():
-        v_n = np.sqrt(2.0 * E[th] * eV_to_J / m_n)
-        for ki, (iso, tbl) in enumerate(vxs.nuclides):
-            A = iso.atomic_weight_ratio
-            v_t = sample_velocity_many(iso.sampler, v_n, rng)
-            v_cm = (v_n + A * v_t) / (A + 1.0)
-            E_look = 0.5 * m_n * np.abs(v_n - v_cm) ** 2 / eV_to_J
-            el[ki, th] = np.interp(E_look, tbl["grid"], tbl["el"]) \
-                * 1e-24 * iso.number_density
-    return el, inl, cap, fis
 
 
 def _inelastic_channels(reader, element):
@@ -832,12 +810,14 @@ def _urr_adjust(reader, vxs, el, cap, fis, E, rng):
 
 
 def _lane_xs(reader, vxs, E, rng):
-    """Per-nuclide macroscopic XS for an energy array with the full scalar
-    lookup physics: sub-10 eV Doppler elastic flight energy, then URR
+    """Per-nuclide macroscopic XS for an energy array: the tabulated
+    (already free-gas-broadened) sigma(E, T) at the lab energy, then URR
     probability-table band sampling. One evaluation per lane per event feeds
     both the flight sampling and the collision channel selection, matching
-    the scalar kernel's single iso_data evaluation."""
-    el, inl, cap, fis = _per_nuclide_doppler(vxs, E, rng)
+    the scalar kernel's single iso_data evaluation. (The flight XS is NOT
+    re-broadened; the target thermal motion enters only through the collision
+    kinematics — see cross_section_read.get_cross_sections.)"""
+    el, inl, cap, fis = vxs.per_nuclide(E)
     el, cap, fis = _urr_adjust(reader, vxs, el, cap, fis, E, rng)
     return el, inl, cap, fis
 
