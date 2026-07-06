@@ -20,7 +20,7 @@ class NuclideTable:
 
     def __init__(self, reader, nuclides):
         # nuclides: list of (element, A, beta) unique across the problem
-        grid, el, inl, cap, fis = [], [], [], [], []
+        grid, el, inl, cap, fis, tot, nufis = [], [], [], [], [], [], []
         goff = [0]
         A = []; beta = []
         ang_eg, ang_bo, ang_mu, ang_cdf = [], [], [], []
@@ -41,6 +41,10 @@ class NuclideTable:
             inl.extend((tbl["in"] * 1e-24).tolist())
             cap.extend((tbl["cap"] * 1e-24).tolist())
             fis.extend((tbl["fis"] * 1e-24).tolist())
+            # precomputed total micro (one flight lookup instead of four) —
+            # linear interp of the sum equals the sum of interps on one grid
+            tot.extend(((tbl["el"] + tbl["in"] + tbl["cap"] + tbl["fis"])
+                        * 1e-24).tolist())
             goff.append(len(grid))
             A.append(a); beta.append(b)
             # angular (MT=2)
@@ -113,12 +117,20 @@ class NuclideTable:
                 nu_v.extend(np.asarray(nut[1], float).tolist())
                 fissile.append(1)
                 pa, pb = watt_params_for(element); wa.append(pa); wb.append(pb)
+                # nu(E)*sigma_f on the nuclide grid: one read at collisions for
+                # the production estimator (URR-window fissile still uses the
+                # nu table against the band-sampled sigma_f)
+                nu_g = np.interp(g, np.asarray(nut[0], float),
+                                 np.asarray(nut[1], float))
+                nufis.extend((nu_g * tbl["fis"] * 1e-24).tolist())
             else:
                 fissile.append(0); wa.append(0.0); wb.append(0.0)
+                nufis.extend([0.0] * len(g))
             nu_off.append(len(nu_e))
         self.grid = np.array(grid); self.goff = np.array(goff, np.int64)
         self.el = np.array(el); self.inl = np.array(inl)
         self.cap = np.array(cap); self.fis = np.array(fis)
+        self.tot = np.array(tot); self.nufis = np.array(nufis)
         self.A = np.array(A); self.beta = np.array(beta)
         self.ang_eg = np.array(ang_eg) if ang_eg else np.zeros(1)
         self.ang_eg_off = np.array(ang_eg_off, np.int64)

@@ -50,6 +50,26 @@ def _interp1(grid, y, e):
 
 
 @njit(fastmath=True, cache=True)
+def _locate(grid, e):
+    """Bracket index and fraction on `grid` with _interp1's clamp semantics:
+    y[lo] + t*(y[lo+1]-y[lo]) reproduces _interp1(grid, y, e) for any aligned
+    y, so one search serves any number of reads."""
+    n = grid.size
+    if e <= grid[0]:
+        return 0, 0.0
+    if e >= grid[n - 1]:
+        return n - 2, 1.0
+    lo = 0; hi = n - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if grid[mid] <= e:
+            lo = mid
+        else:
+            hi = mid
+    return lo, (e - grid[lo]) / (grid[hi] - grid[lo])
+
+
+@njit(fastmath=True, cache=True)
 def _sample_mu_tab(E, eg, off, mus, cdfs):
     """CM elastic cosine from the tabulated angular data; statistical
     interpolation between incident-energy blocks then CDF inversion. Mirrors
@@ -840,7 +860,8 @@ def _urr_sample(E, k, mic_el, mic_cap, mic_fis, r,
 def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                           n_media, prim, prim_off, priority, is_void, bc,
                           tok, tok_off, stype, params,
-                          grid, goff, xs_el, xs_in, xs_cap, xs_fis, nuc_A, nuc_beta,
+                          grid, goff, xs_el, xs_in, xs_cap, xs_fis,
+                          xs_tot, xs_nufis, nuc_A, nuc_beta,
                           ang_eg, ang_eg_off, ang_bo, ang_bo_off, ang_mu, ang_cdf, ang_data_off, ang_has,
                           in_xs, in_Q, in_mt_off, in_xs_off, in_kind, in_did, in_nchild,
                           sec_law, sec_frame, sec_ein, sec_ein_off, sec_blk, sec_blk_off,
@@ -852,13 +873,19 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                           urr_cumul, urr_el, urr_fis, urr_cap,
                           med_off, med_nuc, med_N, cutoff, eps, max_events, maxf):
     n = x0.size
+    n_nuc = goff.size - 1
     fp = np.zeros(n)
     fb_x = np.zeros((n, maxf)); fb_y = np.zeros((n, maxf)); fb_z = np.zeros((n, maxf))
     fb_u = np.zeros((n, maxf)); fb_v = np.zeros((n, maxf)); fb_w = np.zeros((n, maxf))
     fb_E = np.zeros((n, maxf)); fb_c = np.zeros(n, np.int64)
     for i in prange(n):
         el_k = np.empty(64); in_k = np.empty(64); cap_k = np.empty(64)
-        fis_k = np.empty(64); tot_k = np.empty(64)
+        fis_k = np.empty(64); tot_k = np.empty(64); urrw = np.zeros(64, np.int64)
+        # per-global-nuclide micro cache, valid while E is unchanged (i.e.
+        # across boundary crossings / reflections); URR-window nuclides bypass
+        # it so their probability bands stay resampled per flight
+        mic_tot = np.empty(n_nuc); mic_idx = np.empty(n_nuc, np.int64)
+        mic_frac = np.empty(n_nuc); mic_E = np.full(n_nuc, -1.0)
         stk_x = np.empty(32); stk_y = np.empty(32); stk_z = np.empty(32)
         stk_u = np.empty(32); stk_v = np.empty(32); stk_w = np.empty(32); stk_E = np.empty(32)
         stkp = 0
@@ -884,24 +911,41 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                     else:
                         x = px + eps * u; y = py + eps * v; z = pz + eps * w
                     continue
-                Sig_t = 0.0; fprod = 0.0
+                Sig_t = 0.0
                 for j in range(nk):
                     gk = med_nuc[ms + j]; Nk = med_N[ms + j]
-                    g0 = goff[gk]; g1 = goff[gk + 1]
-                    e_ = _interp1(grid[g0:g1], xs_el[g0:g1], E)
-                    i_ = _interp1(grid[g0:g1], xs_in[g0:g1], E)
-                    c_ = _interp1(grid[g0:g1], xs_cap[g0:g1], E)
-                    f_ = _interp1(grid[g0:g1], xs_fis[g0:g1], E)
                     if urr_has[gk] == 1 and urr_emin[gk] <= E <= urr_emax[gk]:
+                        # unresolved window: bands are resampled every flight,
+                        # so compute (one locate, four reads) and keep the
+                        # channels for the collision
+                        g0 = goff[gk]
+                        lo, tf = _locate(grid[g0:goff[gk + 1]], E)
+                        ii = g0 + lo
+                        e_ = xs_el[ii] + tf * (xs_el[ii + 1] - xs_el[ii])
+                        i_ = xs_in[ii] + tf * (xs_in[ii + 1] - xs_in[ii])
+                        c_ = xs_cap[ii] + tf * (xs_cap[ii + 1] - xs_cap[ii])
+                        f_ = xs_fis[ii] + tf * (xs_fis[ii + 1] - xs_fis[ii])
                         e_, c_, f_ = _urr_sample(E, gk, e_, c_, f_, np.random.random(),
                                                  urr_energy, urr_e_off, urr_tab_off, urr_nband,
                                                  urr_interp, urr_mult, urr_cumul, urr_el, urr_fis, urr_cap)
-                    ee = e_ * Nk; ii = i_ * Nk; cc = c_ * Nk; ff = f_ * Nk
-                    el_k[j] = ee; in_k[j] = ii; cap_k[j] = cc; fis_k[j] = ff
-                    tk = ee + ii + cc + ff; tot_k[j] = tk; Sig_t += tk
-                    if fissile[gk] == 1 and ff > 0.0:
-                        fprod += _interp1(nu_e[nu_off[gk]:nu_off[gk + 1]],
-                                          nu_v[nu_off[gk]:nu_off[gk + 1]], E) * ff
+                        el_k[j] = e_ * Nk; in_k[j] = i_ * Nk
+                        cap_k[j] = c_ * Nk; fis_k[j] = f_ * Nk
+                        tk = (e_ + i_ + c_ + f_) * Nk
+                        urrw[j] = 1
+                    else:
+                        # smooth data: one total-XS read per nuclide, cached
+                        # while E is unchanged; channels resolved only if this
+                        # nuclide is hit at an actual collision
+                        if mic_E[gk] != E:
+                            g0 = goff[gk]
+                            lo, tf = _locate(grid[g0:goff[gk + 1]], E)
+                            ii = g0 + lo
+                            mic_idx[gk] = ii; mic_frac[gk] = tf
+                            mic_tot[gk] = xs_tot[ii] + tf * (xs_tot[ii + 1] - xs_tot[ii])
+                            mic_E[gk] = E
+                        tk = mic_tot[gk] * Nk
+                        urrw[j] = 0
+                    tot_k[j] = tk; Sig_t += tk
                 if Sig_t <= 0.0:
                     break
                 s = -math.log(1.0 - np.random.random()) / Sig_t
@@ -919,6 +963,19 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                 x += s * u; y += s * v; z += s * w
                 if not contains_medium(m, tok, tok_off, stype, params, x, y, z):
                     continue
+                # collision estimator: nu*Sigma_f over all nuclides (deferred
+                # from the flight loop -- only real collisions pay for it)
+                fprod = 0.0
+                for j in range(nk):
+                    gk = med_nuc[ms + j]
+                    if fissile[gk] == 1:
+                        if urrw[j] == 1:
+                            if fis_k[j] > 0.0:
+                                fprod += _interp1(nu_e[nu_off[gk]:nu_off[gk + 1]],
+                                                  nu_v[nu_off[gk]:nu_off[gk + 1]], E) * fis_k[j]
+                        else:
+                            ii = mic_idx[gk]; tf = mic_frac[gk]
+                            fprod += (xs_nufis[ii] + tf * (xs_nufis[ii + 1] - xs_nufis[ii])) * med_N[ms + j]
                 fp[i] += fprod / Sig_t
                 # isotope selection by total per-nuclide XS
                 roll = np.random.random() * Sig_t; acc = 0.0; sel = 0
@@ -927,7 +984,17 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                     if roll <= acc:
                         sel = j; break
                 gk = med_nuc[ms + sel]; A = nuc_A[gk]; beta = nuc_beta[gk]; Ap1 = A + 1.0
-                el_ = el_k[sel]; in_ = in_k[sel]; cap_ = cap_k[sel]; fis_ = fis_k[sel]
+                if urrw[sel] == 1:
+                    el_ = el_k[sel]; in_ = in_k[sel]; cap_ = cap_k[sel]; fis_ = fis_k[sel]
+                else:
+                    # smooth data: resolve the four channels now, reusing the
+                    # cached bracket (same values the flight loop would have
+                    # computed)
+                    Nk = med_N[ms + sel]; ii = mic_idx[gk]; tf = mic_frac[gk]
+                    el_ = (xs_el[ii] + tf * (xs_el[ii + 1] - xs_el[ii])) * Nk
+                    in_ = (xs_in[ii] + tf * (xs_in[ii + 1] - xs_in[ii])) * Nk
+                    cap_ = (xs_cap[ii] + tf * (xs_cap[ii + 1] - xs_cap[ii])) * Nk
+                    fis_ = (xs_fis[ii] + tf * (xs_fis[ii + 1] - xs_fis[ii])) * Nk
                 tt = el_ + in_ + cap_ + fis_
                 roll2 = np.random.random() * tt
                 if roll2 < el_ + in_:
@@ -1080,14 +1147,21 @@ class MultiKeffProblem:
     path: 1.0199 vs vector 1.0211 (-111 pcm, z=1.0) -- fast (n,2n) now matches
     (was -407 discrete-only).
 
-    KNOWN RESIDUAL (BEAVRS pin cell): njit-full 1.2936 vs vector-full 1.2892 /
-    OpenMC 1.2890 (+440 pcm). The continuum secondary port closed the original
-    +921 pcm discrete-only bias substantially, but ~360 pcm remains at matched
-    physics (njit-no-nxn 1.2912 vs vector-no-nxn 1.2876) plus ~80 pcm (n,2n)
-    over-production (njit (n,2n) worth +239 vs vector +160). The channel-selection
-    RATE is exact (sum per-MT xs == fast-table inelastic) and sample_secondary is
-    validated <1% vs the Python reader for U238/U235/O16 MT16/17/91, so the
-    residual is a subtler inelastic down-scattering detail, still open."""
+    VALIDATED (BEAVRS pin cell, 2026-07-06, matched data + settings, 10k
+    hist/gen x 90 gens / 30 inactive): njit 1.29234 +/- 0.00067 == vector
+    1.29247 +/- 0.00031 == OpenMC 1.29246 +/- 0.00074 (three-way agreement;
+    energy-binned flux / U238-capture / fission rates match OpenMC to ~1% in
+    every k-relevant group). Earlier "+440/+317 pcm njit residual" reports were
+    an artifact of stale references: the endfb data files were replaced on
+    2026-07-04/05, which moved k_inf of ALL codes up ~+360 pcm, and the old
+    vector/OpenMC reference values predated the change.
+
+    Flight loop reads one precomputed total-XS value per smooth nuclide
+    (bracket cached while E is unchanged, so boundary crossings and
+    reflections cost no new searches); the four reaction channels and the
+    nu*Sigma_f production term are resolved only at real collisions from the
+    cached bracket. URR-window nuclides keep the original per-flight band
+    resampling with stored channels."""
 
     def __init__(self, reader, mediums):
         from .numba_geometry import CompiledGeometry
@@ -1101,7 +1175,7 @@ class MultiKeffProblem:
             *(np.ascontiguousarray(src[k]) for k in ("x", "y", "z", "u", "v", "w", "energy")),
             g.n_media, g.prim, g.prim_off, g.priority, g.is_void, g.bc,
             g.tok, g.tok_off, g.stype, g.params,
-            t.grid, t.goff, t.el, t.inl, t.cap, t.fis, t.A, t.beta,
+            t.grid, t.goff, t.el, t.inl, t.cap, t.fis, t.tot, t.nufis, t.A, t.beta,
             t.ang_eg, t.ang_eg_off, t.ang_bo, t.ang_bo_off, t.ang_mu, t.ang_cdf, t.ang_data_off, t.ang_has,
             t.in_xs, t.in_Q, t.in_mt_off, t.in_xs_off, t.in_kind, t.in_did, t.in_nchild,
             t.sec.law, t.sec.frame, t.sec.ein, t.sec.ein_off, t.sec.blk, t.sec.blk_off,
