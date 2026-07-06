@@ -729,7 +729,7 @@ class SingleKeffProblem:
         self.inel_xs, self.inel_Q, self.n_inel = _inelastic_arrays(reader, element, self.grid, N)
         self.A = float(A); self.beta = float(beta)
 
-    def _generation(self, src, maxf=8, eps=1e-6, max_events=100000):
+    def _generation(self, src, maxf=16, eps=1e-6, max_events=100000):
         g = self.geo
         return keff_generation_single(
             *(np.ascontiguousarray(src[k]) for k in ("x", "y", "z", "u", "v", "w", "energy")),
@@ -741,7 +741,7 @@ class SingleKeffProblem:
             self.inel_xs, self.inel_Q, self.n_inel,
             self.A, self.beta, THERMAL_CUTOFF, eps, max_events, maxf)
 
-    def run_keff(self, initial_source, generations=90, inactive=30, seed=1, maxf=8):
+    def run_keff(self, initial_source, generations=90, inactive=30, seed=1, maxf=16):
         from .statistics import mean_sem
         r = np.random.default_rng(seed)
         src = {k: np.array(initial_source[k], float) for k in
@@ -842,7 +842,7 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                           tok, tok_off, stype, params,
                           grid, goff, xs_el, xs_in, xs_cap, xs_fis, nuc_A, nuc_beta,
                           ang_eg, ang_eg_off, ang_bo, ang_bo_off, ang_mu, ang_cdf, ang_data_off, ang_has,
-                          in_xs, in_Q, in_mt_off, in_xs_off, in_kind, in_did,
+                          in_xs, in_Q, in_mt_off, in_xs_off, in_kind, in_did, in_nchild,
                           sec_law, sec_frame, sec_ein, sec_ein_off, sec_blk, sec_blk_off,
                           sec_dat_off, sec_eout, sec_cdf, sec_aux1, sec_aux2,
                           sec_muval, sec_mucdf, sec_mu_off,
@@ -857,168 +857,212 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
     fb_u = np.zeros((n, maxf)); fb_v = np.zeros((n, maxf)); fb_w = np.zeros((n, maxf))
     fb_E = np.zeros((n, maxf)); fb_c = np.zeros(n, np.int64)
     for i in prange(n):
-        x = x0[i]; y = y0[i]; z = z0[i]; u = u0[i]; v = v0[i]; w = w0[i]; E = E0[i]
         el_k = np.empty(64); in_k = np.empty(64); cap_k = np.empty(64)
         fis_k = np.empty(64); tot_k = np.empty(64)
-        for _ev in range(max_events):
-            m = resolve_medium(n_media, priority, tok, tok_off, stype, params, x, y, z)
-            if m < 0:
-                break
-            dist, s_surf = nearest_crossing(n_media, prim, prim_off, priority,
-                                            tok, tok_off, stype, params, x, y, z, u, v, w)
-            if s_surf < 0:
-                break
-            ms = med_off[m]; me = med_off[m + 1]; nk = me - ms
-            if is_void[m] == 1:
-                px = x + dist * u; py = y + dist * v; pz = z + dist * w
-                if bc[s_surf] == 1:
-                    nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
-                    dot = u * nx + v * ny + w * nz
-                    u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
-                    st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
-                    x = px + st * nx; y = py + st * ny; z = pz + st * nz
-                else:
-                    x = px + eps * u; y = py + eps * v; z = pz + eps * w
-                continue
-            Sig_t = 0.0; fprod = 0.0
-            for j in range(nk):
-                gk = med_nuc[ms + j]; Nk = med_N[ms + j]
-                g0 = goff[gk]; g1 = goff[gk + 1]
-                e_ = _interp1(grid[g0:g1], xs_el[g0:g1], E)
-                i_ = _interp1(grid[g0:g1], xs_in[g0:g1], E)
-                c_ = _interp1(grid[g0:g1], xs_cap[g0:g1], E)
-                f_ = _interp1(grid[g0:g1], xs_fis[g0:g1], E)
-                if urr_has[gk] == 1 and urr_emin[gk] <= E <= urr_emax[gk]:
-                    e_, c_, f_ = _urr_sample(E, gk, e_, c_, f_, np.random.random(),
-                                             urr_energy, urr_e_off, urr_tab_off, urr_nband,
-                                             urr_interp, urr_mult, urr_cumul, urr_el, urr_fis, urr_cap)
-                ee = e_ * Nk; ii = i_ * Nk; cc = c_ * Nk; ff = f_ * Nk
-                el_k[j] = ee; in_k[j] = ii; cap_k[j] = cc; fis_k[j] = ff
-                tk = ee + ii + cc + ff; tot_k[j] = tk; Sig_t += tk
-                if fissile[gk] == 1 and ff > 0.0:
-                    fprod += _interp1(nu_e[nu_off[gk]:nu_off[gk + 1]],
-                                      nu_v[nu_off[gk]:nu_off[gk + 1]], E) * ff
-            if Sig_t <= 0.0:
-                break
-            s = -math.log(1.0 - np.random.random()) / Sig_t
-            if s > dist:
-                px = x + dist * u; py = y + dist * v; pz = z + dist * w
-                if bc[s_surf] == 1:
-                    nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
-                    dot = u * nx + v * ny + w * nz
-                    u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
-                    st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
-                    x = px + st * nx; y = py + st * ny; z = pz + st * nz
-                else:
-                    x = px + eps * u; y = py + eps * v; z = pz + eps * w
-                continue
-            x += s * u; y += s * v; z += s * w
-            if not contains_medium(m, tok, tok_off, stype, params, x, y, z):
-                continue
-            fp[i] += fprod / Sig_t
-            # isotope selection by total per-nuclide XS
-            roll = np.random.random() * Sig_t; acc = 0.0; sel = 0
-            for j in range(nk):
-                acc += tot_k[j]
-                if roll <= acc:
-                    sel = j; break
-            gk = med_nuc[ms + sel]; A = nuc_A[gk]; beta = nuc_beta[gk]; Ap1 = A + 1.0
-            el_ = el_k[sel]; in_ = in_k[sel]; cap_ = cap_k[sel]; fis_ = fis_k[sel]
-            tt = el_ + in_ + cap_ + fis_
-            roll2 = np.random.random() * tt
-            if roll2 < el_ + in_:
-                do_inel = roll2 >= el_
-                nmt = in_mt_off[gk + 1] - in_mt_off[gk]
-                if do_inel and nmt > 0:
-                    g0 = goff[gk]; g1 = goff[gk + 1]; base = in_mt_off[gk]
-                    tot = 0.0
-                    for jm in range(nmt):
-                        xo = in_xs_off[base + jm]
-                        tot += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
-                    rr = np.random.random() * tot; accm = 0.0; smt = base
-                    for jm in range(nmt):
-                        xo = in_xs_off[base + jm]
-                        accm += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
-                        if rr <= accm:
-                            smt = base + jm; break
-                    Q = in_Q[smt]
-                    if in_kind[smt] == 0:
-                        # discrete level: two-body, isotropic CM
-                        v_n = math.sqrt(2.0 * E * _EV / _M_N); vcz = v_n / Ap1; Vz = v_n - vcz
-                        E_cm = 0.5 * _M_N * Vz * Vz / _EV; tot_cm = E_cm * Ap1 / A
-                        mag = Vz if tot_cm <= Q else math.sqrt(2.0 * ((tot_cm - Q) * A / Ap1) * _EV / _M_N)
+        stk_x = np.empty(32); stk_y = np.empty(32); stk_z = np.empty(32)
+        stk_u = np.empty(32); stk_v = np.empty(32); stk_w = np.empty(32); stk_E = np.empty(32)
+        stkp = 0
+        x = x0[i]; y = y0[i]; z = z0[i]; u = u0[i]; v = v0[i]; w = w0[i]; E = E0[i]
+        while True:
+            for _ev in range(max_events):
+                m = resolve_medium(n_media, priority, tok, tok_off, stype, params, x, y, z)
+                if m < 0:
+                    break
+                dist, s_surf = nearest_crossing(n_media, prim, prim_off, priority,
+                                                tok, tok_off, stype, params, x, y, z, u, v, w)
+                if s_surf < 0:
+                    break
+                ms = med_off[m]; me = med_off[m + 1]; nk = me - ms
+                if is_void[m] == 1:
+                    px = x + dist * u; py = y + dist * v; pz = z + dist * w
+                    if bc[s_surf] == 1:
+                        nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
+                        dot = u * nx + v * ny + w * nz
+                        u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
+                        st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
+                        x = px + st * nx; y = py + st * ny; z = pz + st * nz
+                    else:
+                        x = px + eps * u; y = py + eps * v; z = pz + eps * w
+                    continue
+                Sig_t = 0.0; fprod = 0.0
+                for j in range(nk):
+                    gk = med_nuc[ms + j]; Nk = med_N[ms + j]
+                    g0 = goff[gk]; g1 = goff[gk + 1]
+                    e_ = _interp1(grid[g0:g1], xs_el[g0:g1], E)
+                    i_ = _interp1(grid[g0:g1], xs_in[g0:g1], E)
+                    c_ = _interp1(grid[g0:g1], xs_cap[g0:g1], E)
+                    f_ = _interp1(grid[g0:g1], xs_fis[g0:g1], E)
+                    if urr_has[gk] == 1 and urr_emin[gk] <= E <= urr_emax[gk]:
+                        e_, c_, f_ = _urr_sample(E, gk, e_, c_, f_, np.random.random(),
+                                                 urr_energy, urr_e_off, urr_tab_off, urr_nband,
+                                                 urr_interp, urr_mult, urr_cumul, urr_el, urr_fis, urr_cap)
+                    ee = e_ * Nk; ii = i_ * Nk; cc = c_ * Nk; ff = f_ * Nk
+                    el_k[j] = ee; in_k[j] = ii; cap_k[j] = cc; fis_k[j] = ff
+                    tk = ee + ii + cc + ff; tot_k[j] = tk; Sig_t += tk
+                    if fissile[gk] == 1 and ff > 0.0:
+                        fprod += _interp1(nu_e[nu_off[gk]:nu_off[gk + 1]],
+                                          nu_v[nu_off[gk]:nu_off[gk + 1]], E) * ff
+                if Sig_t <= 0.0:
+                    break
+                s = -math.log(1.0 - np.random.random()) / Sig_t
+                if s > dist:
+                    px = x + dist * u; py = y + dist * v; pz = z + dist * w
+                    if bc[s_surf] == 1:
+                        nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
+                        dot = u * nx + v * ny + w * nz
+                        u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
+                        st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
+                        x = px + st * nx; y = py + st * ny; z = pz + st * nz
+                    else:
+                        x = px + eps * u; y = py + eps * v; z = pz + eps * w
+                    continue
+                x += s * u; y += s * v; z += s * w
+                if not contains_medium(m, tok, tok_off, stype, params, x, y, z):
+                    continue
+                fp[i] += fprod / Sig_t
+                # isotope selection by total per-nuclide XS
+                roll = np.random.random() * Sig_t; acc = 0.0; sel = 0
+                for j in range(nk):
+                    acc += tot_k[j]
+                    if roll <= acc:
+                        sel = j; break
+                gk = med_nuc[ms + sel]; A = nuc_A[gk]; beta = nuc_beta[gk]; Ap1 = A + 1.0
+                el_ = el_k[sel]; in_ = in_k[sel]; cap_ = cap_k[sel]; fis_ = fis_k[sel]
+                tt = el_ + in_ + cap_ + fis_
+                roll2 = np.random.random() * tt
+                if roll2 < el_ + in_:
+                    do_inel = roll2 >= el_
+                    nmt = in_mt_off[gk + 1] - in_mt_off[gk]
+                    if do_inel and nmt > 0:
+                        g0 = goff[gk]; g1 = goff[gk + 1]; base = in_mt_off[gk]
+                        tot = 0.0
+                        for jm in range(nmt):
+                            xo = in_xs_off[base + jm]
+                            tot += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
+                        rr = np.random.random() * tot; accm = 0.0; smt = base
+                        for jm in range(nmt):
+                            xo = in_xs_off[base + jm]
+                            accm += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
+                            if rr <= accm:
+                                smt = base + jm; break
+                        Q = in_Q[smt]
+                        if in_kind[smt] == 0:
+                            # discrete level: two-body, isotropic CM
+                            v_n = math.sqrt(2.0 * E * _EV / _M_N); vcz = v_n / Ap1; Vz = v_n - vcz
+                            E_cm = 0.5 * _M_N * Vz * Vz / _EV; tot_cm = E_cm * Ap1 / A
+                            mag = Vz if tot_cm <= Q else math.sqrt(2.0 * ((tot_cm - Q) * A / Ap1) * _EV / _M_N)
+                            mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
+                            sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
+                            vpx = mag * sic * math.cos(phic); vpy = mag * sic * math.sin(phic); vpz = mag * mu_cm + vcz
+                            sp2 = vpx * vpx + vpy * vpy + vpz * vpz; E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
+                            sp = math.sqrt(sp2); mu_lab = vpz / sp if sp > 0.0 else 1.0
+                        else:
+                            # continuum (MT 16/17/91): tabulated secondary energy-angle
+                            # (Law61/Kalbach/Law4, lab after CM->lab), Maxwellian fallback.
+                            Einc = E
+                            E_avail = E - Q
+                            if E_avail < 1.0:
+                                E_avail = 1.0
+                            did = in_did[smt]; got = 0; Eo = 0.0; mu_lab = 0.0
+                            if did >= 0:
+                                for _t in range(10):
+                                    Eo, mo, vv = sample_secondary(
+                                        did, Einc, A, sec_law, sec_frame, sec_ein, sec_ein_off,
+                                        sec_blk, sec_blk_off, sec_dat_off, sec_eout, sec_cdf,
+                                        sec_aux1, sec_aux2, sec_muval, sec_mucdf, sec_mu_off)
+                                    if vv == 1 and Eo <= E_avail:
+                                        mu_lab = mo; got = 1; break
+                            if got == 0:
+                                Eo = maxwellian_nj(E_avail, A); mu_lab = 2.0 * np.random.random() - 1.0
+                            E = max(1e-5, Eo)
+                            # bank (n,2n)/(n,3n) extra neutrons to the same-generation
+                            # stack (each an independent secondary sample of nuclide gk)
+                            for _c in range(in_nchild[smt]):
+                                if stkp >= 32:
+                                    break
+                                Ec = 0.0; mc = 0.0; vc = 0
+                                if did >= 0:
+                                    Ec, mc, vc = sample_secondary(
+                                        did, Einc, A, sec_law, sec_frame, sec_ein, sec_ein_off,
+                                        sec_blk, sec_blk_off, sec_dat_off, sec_eout, sec_cdf,
+                                        sec_aux1, sec_aux2, sec_muval, sec_mucdf, sec_mu_off)
+                                if vc == 0:
+                                    Ec = maxwellian_nj(E_avail, A); mc = 2.0 * np.random.random() - 1.0
+                                if mc > 1.0: mc = 1.0
+                                elif mc < -1.0: mc = -1.0
+                                phg = 2.0 * math.pi * np.random.random(); cg = math.cos(phg); sg = math.sin(phg)
+                                stg = math.sqrt(max(0.0, 1.0 - mc * mc))
+                                if abs(w) >= 0.999999:
+                                    sgn = 1.0 if w > 0.0 else -1.0
+                                    cu = stg * cg; cv = stg * sg; cw = sgn * mc
+                                else:
+                                    dnn = math.sqrt(max(1e-12, 1.0 - w * w)); rtt = stg / dnn
+                                    cu = mc * u + rtt * (u * w * cg - v * sg)
+                                    cv = mc * v + rtt * (v * w * cg + u * sg)
+                                    cw = mc * w - stg * dnn * cg
+                                    nnn = math.sqrt(cu * cu + cv * cv + cw * cw)
+                                    cu /= nnn; cv /= nnn; cw /= nnn
+                                stk_x[stkp] = x; stk_y[stkp] = y; stk_z[stkp] = z
+                                stk_u[stkp] = cu; stk_v[stkp] = cv; stk_w[stkp] = cw
+                                stk_E[stkp] = max(1e-5, Ec); stkp += 1
+                    elif E < cutoff:
+                        v_n = math.sqrt(2.0 * E * _EV / _M_N); p_first = 2.0 / (_SQRT_PI * v_n * beta + 2.0)
+                        while True:
+                            r1 = np.random.random(); r2 = np.random.random(); r3 = np.random.random()
+                            r4 = np.random.random(); r5 = np.random.random()
+                            xx = (math.sqrt(-math.log((1.0 - r1) * (1.0 - r2))) if np.random.random() < p_first
+                                  else math.sqrt(-math.log(1.0 - r1) - math.log(1.0 - r2) * math.cos(0.5 * math.pi * r3) ** 2))
+                            v_t = xx / beta; mu_t = 2.0 * r4 - 1.0
+                            if r5 < math.sqrt(v_n * v_n + v_t * v_t - 2.0 * v_n * v_t * mu_t) / (v_n + v_t):
+                                break
+                        phit = 2.0 * math.pi * np.random.random(); sit = math.sqrt(max(0.0, 1.0 - mu_t * mu_t)) if v_t > 0 else 0.0
+                        vtx = v_t * sit * math.cos(phit) if v_t > 0 else 0.0; vty = v_t * sit * math.sin(phit) if v_t > 0 else 0.0
+                        vtz = v_t * mu_t if v_t > 0 else 0.0
+                        vcx = A * vtx / Ap1; vcy = A * vty / Ap1; vcz = (v_n + A * vtz) / Ap1
+                        Vmag = math.sqrt(vcx * vcx + vcy * vcy + (v_n - vcz) ** 2)
                         mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
                         sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
-                        vpx = mag * sic * math.cos(phic); vpy = mag * sic * math.sin(phic); vpz = mag * mu_cm + vcz
+                        vpx = Vmag * sic * math.cos(phic) + vcx; vpy = Vmag * sic * math.sin(phic) + vcy; vpz = Vmag * mu_cm + vcz
                         sp2 = vpx * vpx + vpy * vpy + vpz * vpz; E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
                         sp = math.sqrt(sp2); mu_lab = vpz / sp if sp > 0.0 else 1.0
                     else:
-                        # continuum (MT 16/17/91): tabulated secondary energy-angle
-                        # (Law61/Kalbach/Law4, lab after CM->lab), Maxwellian fallback.
-                        # (n,2n)/(n,3n) multiplication (in_nchild) not yet banked.
-                        E_avail = E - Q
-                        if E_avail < 1.0:
-                            E_avail = 1.0
-                        did = in_did[smt]; got = 0; Eo = 0.0; mu_lab = 0.0
-                        if did >= 0:
-                            for _t in range(10):
-                                Eo, mo, vv = sample_secondary(
-                                    did, E, A, sec_law, sec_frame, sec_ein, sec_ein_off,
-                                    sec_blk, sec_blk_off, sec_dat_off, sec_eout, sec_cdf,
-                                    sec_aux1, sec_aux2, sec_muval, sec_mucdf, sec_mu_off)
-                                if vv == 1 and Eo <= E_avail:
-                                    mu_lab = mo; got = 1; break
-                        if got == 0:
-                            Eo = maxwellian_nj(E_avail, A); mu_lab = 2.0 * np.random.random() - 1.0
-                        E = max(1e-5, Eo)
-                elif E < cutoff:
-                    v_n = math.sqrt(2.0 * E * _EV / _M_N); p_first = 2.0 / (_SQRT_PI * v_n * beta + 2.0)
-                    while True:
-                        r1 = np.random.random(); r2 = np.random.random(); r3 = np.random.random()
-                        r4 = np.random.random(); r5 = np.random.random()
-                        xx = (math.sqrt(-math.log((1.0 - r1) * (1.0 - r2))) if np.random.random() < p_first
-                              else math.sqrt(-math.log(1.0 - r1) - math.log(1.0 - r2) * math.cos(0.5 * math.pi * r3) ** 2))
-                        v_t = xx / beta; mu_t = 2.0 * r4 - 1.0
-                        if r5 < math.sqrt(v_n * v_n + v_t * v_t - 2.0 * v_n * v_t * mu_t) / (v_n + v_t):
+                        mu_cm = (_sample_mu_tab_k(E, gk, ang_eg_off, ang_bo_off, ang_data_off, ang_eg, ang_bo, ang_mu, ang_cdf)
+                                 if ang_has[gk] == 1 else 2.0 * np.random.random() - 1.0)
+                        term = A * A + 1.0 + 2.0 * A * mu_cm
+                        E = max(1e-5, E * term / (Ap1 * Ap1)); mu_lab = (1.0 + A * mu_cm) / math.sqrt(term)
+                    if mu_lab > 1.0: mu_lab = 1.0
+                    elif mu_lab < -1.0: mu_lab = -1.0
+                    phi = 2.0 * math.pi * np.random.random(); cphi = math.cos(phi); sphi = math.sin(phi)
+                    sti = math.sqrt(max(0.0, 1.0 - mu_lab * mu_lab))
+                    if abs(w) >= 0.999999:
+                        sign = 1.0 if w > 0.0 else -1.0; u = sti * cphi; v = sti * sphi; w = sign * mu_lab
+                    else:
+                        dn = math.sqrt(max(1e-12, 1.0 - w * w)); rt = sti / dn
+                        un = mu_lab * u + rt * (u * w * cphi - v * sphi); vv = mu_lab * v + rt * (v * w * cphi + u * sphi)
+                        wn = mu_lab * w - sti * dn * cphi; nn = math.sqrt(un * un + vv * vv + wn * wn)
+                        u = un / nn; v = vv / nn; w = wn / nn
+                elif roll2 < el_ + in_ + cap_:
+                    break
+                else:
+                    nu = int(_interp1(nu_e[nu_off[gk]:nu_off[gk + 1]], nu_v[nu_off[gk]:nu_off[gk + 1]], E) + np.random.random())
+                    # accumulate onto the history's bank (the same-generation stack
+                    # means one history can fission more than once)
+                    for _jf in range(nu):
+                        jf = fb_c[i]
+                        if jf >= maxf:
                             break
-                    phit = 2.0 * math.pi * np.random.random(); sit = math.sqrt(max(0.0, 1.0 - mu_t * mu_t)) if v_t > 0 else 0.0
-                    vtx = v_t * sit * math.cos(phit) if v_t > 0 else 0.0; vty = v_t * sit * math.sin(phit) if v_t > 0 else 0.0
-                    vtz = v_t * mu_t if v_t > 0 else 0.0
-                    vcx = A * vtx / Ap1; vcy = A * vty / Ap1; vcz = (v_n + A * vtz) / Ap1
-                    Vmag = math.sqrt(vcx * vcx + vcy * vcy + (v_n - vcz) ** 2)
-                    mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
-                    sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
-                    vpx = Vmag * sic * math.cos(phic) + vcx; vpy = Vmag * sic * math.sin(phic) + vcy; vpz = Vmag * mu_cm + vcz
-                    sp2 = vpx * vpx + vpy * vpy + vpz * vpz; E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
-                    sp = math.sqrt(sp2); mu_lab = vpz / sp if sp > 0.0 else 1.0
-                else:
-                    mu_cm = (_sample_mu_tab_k(E, gk, ang_eg_off, ang_bo_off, ang_data_off, ang_eg, ang_bo, ang_mu, ang_cdf)
-                             if ang_has[gk] == 1 else 2.0 * np.random.random() - 1.0)
-                    term = A * A + 1.0 + 2.0 * A * mu_cm
-                    E = max(1e-5, E * term / (Ap1 * Ap1)); mu_lab = (1.0 + A * mu_cm) / math.sqrt(term)
-                if mu_lab > 1.0: mu_lab = 1.0
-                elif mu_lab < -1.0: mu_lab = -1.0
-                phi = 2.0 * math.pi * np.random.random(); cphi = math.cos(phi); sphi = math.sin(phi)
-                sti = math.sqrt(max(0.0, 1.0 - mu_lab * mu_lab))
-                if abs(w) >= 0.999999:
-                    sign = 1.0 if w > 0.0 else -1.0; u = sti * cphi; v = sti * sphi; w = sign * mu_lab
-                else:
-                    dn = math.sqrt(max(1e-12, 1.0 - w * w)); rt = sti / dn
-                    un = mu_lab * u + rt * (u * w * cphi - v * sphi); vv = mu_lab * v + rt * (v * w * cphi + u * sphi)
-                    wn = mu_lab * w - sti * dn * cphi; nn = math.sqrt(un * un + vv * vv + wn * wn)
-                    u = un / nn; v = vv / nn; w = wn / nn
-            elif roll2 < el_ + in_ + cap_:
-                break
+                        mu = 2.0 * np.random.random() - 1.0; ph = 2.0 * math.pi * np.random.random()
+                        ss = math.sqrt(max(0.0, 1.0 - mu * mu))
+                        fb_x[i, jf] = x; fb_y[i, jf] = y; fb_z[i, jf] = z
+                        fb_u[i, jf] = ss * math.cos(ph); fb_v[i, jf] = ss * math.sin(ph); fb_w[i, jf] = mu
+                        fb_E[i, jf] = _watt_sample(watt_a[gk], watt_b[gk])
+                        fb_c[i] = jf + 1
+                    break
+            if stkp > 0:
+                stkp -= 1
+                x = stk_x[stkp]; y = stk_y[stkp]; z = stk_z[stkp]
+                u = stk_u[stkp]; v = stk_v[stkp]; w = stk_w[stkp]; E = stk_E[stkp]
             else:
-                nu = int(_interp1(nu_e[nu_off[gk]:nu_off[gk + 1]], nu_v[nu_off[gk]:nu_off[gk + 1]], E) + np.random.random())
-                if nu > maxf: nu = maxf
-                for jf in range(nu):
-                    mu = 2.0 * np.random.random() - 1.0; ph = 2.0 * math.pi * np.random.random()
-                    ss = math.sqrt(max(0.0, 1.0 - mu * mu))
-                    fb_x[i, jf] = x; fb_y[i, jf] = y; fb_z[i, jf] = z
-                    fb_u[i, jf] = ss * math.cos(ph); fb_v[i, jf] = ss * math.sin(ph); fb_w[i, jf] = mu
-                    fb_E[i, jf] = _watt_sample(watt_a[gk], watt_b[gk])
-                fb_c[i] = nu
                 break
     return fp, fb_x, fb_y, fb_z, fb_u, fb_v, fb_w, fb_E, fb_c
 
@@ -1030,12 +1074,20 @@ class MultiKeffProblem:
 
     Continuum inelastic (MT 16/17/91) uses the tabulated secondary energy-angle
     distribution (Law61/Kalbach/Law4 via numba_secondary, CM->lab) with a
-    Fermi-gas Maxwellian fallback -- one-to-one with the vector/scalar physics.
-    BEAVRS pin cell: k_inf 1.2901 vs vector 1.2892 / OpenMC 1.2890 (+93/+109 pcm,
-    z=1.2 -- statistical agreement; this was +921 pcm before the secondary port).
-    (n,2n)/(n,3n) neutron MULTIPLICATION (in_nchild) is not yet banked (the
-    emitted primary carries the continuum energy but the extra neutron is not
-    tracked); negligible for thermal lattices, matters for fast systems."""
+    Fermi-gas Maxwellian fallback; (n,2n)/(n,3n) neutron multiplication (in_nchild)
+    is banked to a same-generation stack (stk_*), and the fission bank accumulates
+    (a history can now fission more than once). Bare U235 metal sphere via this
+    path: 1.0199 vs vector 1.0211 (-111 pcm, z=1.0) -- fast (n,2n) now matches
+    (was -407 discrete-only).
+
+    KNOWN RESIDUAL (BEAVRS pin cell): njit-full 1.2936 vs vector-full 1.2892 /
+    OpenMC 1.2890 (+440 pcm). The continuum secondary port closed the original
+    +921 pcm discrete-only bias substantially, but ~360 pcm remains at matched
+    physics (njit-no-nxn 1.2912 vs vector-no-nxn 1.2876) plus ~80 pcm (n,2n)
+    over-production (njit (n,2n) worth +239 vs vector +160). The channel-selection
+    RATE is exact (sum per-MT xs == fast-table inelastic) and sample_secondary is
+    validated <1% vs the Python reader for U238/U235/O16 MT16/17/91, so the
+    residual is a subtler inelastic down-scattering detail, still open."""
 
     def __init__(self, reader, mediums):
         from .numba_geometry import CompiledGeometry
@@ -1043,7 +1095,7 @@ class MultiKeffProblem:
         self.geo = CompiledGeometry(mediums)
         self.t, self.med_off, self.med_nuc, self.med_N = compile_media(reader, mediums)
 
-    def _generation(self, src, maxf=8, eps=1e-6, max_events=100000):
+    def _generation(self, src, maxf=16, eps=1e-6, max_events=100000):
         g = self.geo; t = self.t
         return keff_generation_multi(
             *(np.ascontiguousarray(src[k]) for k in ("x", "y", "z", "u", "v", "w", "energy")),
@@ -1051,7 +1103,7 @@ class MultiKeffProblem:
             g.tok, g.tok_off, g.stype, g.params,
             t.grid, t.goff, t.el, t.inl, t.cap, t.fis, t.A, t.beta,
             t.ang_eg, t.ang_eg_off, t.ang_bo, t.ang_bo_off, t.ang_mu, t.ang_cdf, t.ang_data_off, t.ang_has,
-            t.in_xs, t.in_Q, t.in_mt_off, t.in_xs_off, t.in_kind, t.in_did,
+            t.in_xs, t.in_Q, t.in_mt_off, t.in_xs_off, t.in_kind, t.in_did, t.in_nchild,
             t.sec.law, t.sec.frame, t.sec.ein, t.sec.ein_off, t.sec.blk, t.sec.blk_off,
             t.sec.dat_off, t.sec.eout, t.sec.cdf, t.sec.aux1, t.sec.aux2,
             t.sec.muval, t.sec.mucdf, t.sec.mu_off,
@@ -1061,7 +1113,7 @@ class MultiKeffProblem:
             t.urr_cumul, t.urr_el, t.urr_fis, t.urr_cap,
             self.med_off, self.med_nuc, self.med_N, THERMAL_CUTOFF, eps, max_events, maxf)
 
-    def run_keff(self, initial_source, generations=90, inactive=30, seed=1, maxf=8):
+    def run_keff(self, initial_source, generations=90, inactive=30, seed=1, maxf=16):
         from .statistics import mean_sem
         r = np.random.default_rng(seed)
         src = {k: np.array(initial_source[k], float) for k in

@@ -30,6 +30,9 @@ from .simulation import THERMAL_KINEMATICS_CUTOFF
 EPSILON = 1e-6  # boundary-crossing nudge, matches the scalar kernel
 
 
+# toggle (n,2n)/(n,3n) neutron multiplication (diagnostic)
+NXN_MULT = True
+
 def _interp_shared(E, grid, arrays):
     """Clamped lin--lin interpolation of several y-arrays sharing one grid, at
     the same energies, with a SINGLE ``searchsorted`` reused across all of them.
@@ -1183,7 +1186,7 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
                     mu_out[lane] = float(np.clip(mu_p, -1.0, 1.0))
                     done[lane] = True
 
-                    n_children = {16: 1, 17: 2}.get(mt, 0)
+                    n_children = {16: 1, 17: 2}.get(mt, 0) if NXN_MULT else 0
                     for _ in range(n_children):
                         cE, cmu, _csrc = _emit_secondary_neutron(
                             reader, iso.element, mt, E_in, E_avail, A, rng)
