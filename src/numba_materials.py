@@ -28,7 +28,8 @@ class NuclideTable:
         u_has = []; u_emin = []; u_emax = []; u_interp = []; u_mult = []
         u_energy = []; u_e_off = [0]; u_nband = []; u_tab_off = [0]
         u_cumul = []; u_el = []; u_fis = []; u_cap = []
-        in_xs = []; in_Q = []; in_mt_off = [0]; in_xs_off = [0]  # discrete inel 51-90
+        in_xs = []; in_Q = []; in_mt_off = [0]; in_xs_off = [0]  # all inel MTs
+        in_kind = []; in_did = []; in_nchild = []; in_pairs = []
         from .physics import watt_params_for
         nu_e = []; nu_v = []; nu_off = [0]; fissile = []; wa = []; wb = []
         for (element, a, b) in nuclides:
@@ -82,11 +83,14 @@ class NuclideTable:
                 u_has.append(0); u_emin.append(0.0); u_emax.append(0.0)
                 u_interp.append(2); u_mult.append(0); u_nband.append(0)
             u_e_off.append(len(u_energy)); u_tab_off.append(len(u_cumul))
-            # discrete inelastic (MT 51-90), micro xs on this nuclide's grid + Q
+            # all neutron-emitting inelastic MTs (16/17 = n,xn; 51-90 discrete;
+            # 91 continuum), micro xs on this nuclide's grid + Q. kind 0 = discrete
+            # two-body, 1 = continuum secondary energy (did into the SecondaryTable);
+            # nchild = extra neutrons banked ({16:1, 17:2}).
             reader._scan_inelastic_mts(element)
             gk = np.asarray(reader._fast_tables[element]["grid"], float)
             mts = [mt for mt in reader._available_inelastic_mts.get(element, [])
-                   if 51 <= mt <= 90]
+                   if mt in (16, 17) or 51 <= mt <= 91]
             for mt in mts:
                 d = reader.get_cross_section_data(element, mt)
                 if d is None:
@@ -94,6 +98,12 @@ class NuclideTable:
                 xi = np.interp(gk, d["energy"], d["xs"]) * 1e-24  # micro (x N at runtime)
                 in_xs.extend(xi.tolist()); in_xs_off.append(len(in_xs))
                 in_Q.append(abs(d["q_value"]))
+                if 51 <= mt <= 90:
+                    in_kind.append(0); in_did.append(-1); in_nchild.append(0)
+                else:
+                    in_kind.append(1); in_did.append(len(in_pairs))
+                    in_pairs.append((element, mt))
+                    in_nchild.append({16: 1, 17: 2}.get(mt, 0))
             in_mt_off.append(len(in_Q))
             # nu-bar + Watt (fissile nuclides)
             reader._load_nu(element)
@@ -134,6 +144,13 @@ class NuclideTable:
         self.in_Q = np.array(in_Q) if in_Q else np.zeros(1)
         self.in_mt_off = np.array(in_mt_off, np.int64)   # per-nuclide MT count (cumul)
         self.in_xs_off = np.array(in_xs_off, np.int64)   # per-MT xs start in in_xs
+        self.in_kind = np.array(in_kind, np.int64)       # 0 discrete two-body, 1 continuum
+        self.in_nchild = np.array(in_nchild, np.int64)   # extra neutrons (n,xn)
+        from .numba_secondary import SecondaryTable
+        self.sec = SecondaryTable(reader.base_path, in_pairs)
+        self.in_did = np.array(
+            [self.sec.did_of[in_pairs[j]] if j >= 0 else -1 for j in in_did],
+            np.int64)
         self.nu_e = np.array(nu_e) if nu_e else np.zeros(1)
         self.nu_v = np.array(nu_v) if nu_v else np.zeros(1)
         self.nu_off = np.array(nu_off, np.int64)

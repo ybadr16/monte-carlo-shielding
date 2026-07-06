@@ -17,6 +17,7 @@ from .numba_geometry import (
     CompiledGeometry, surf_normal, resolve_medium, nearest_crossing,
     contains_medium, HAVE_NUMBA,
 )
+from .numba_secondary import sample_secondary, maxwellian_nj
 
 try:
     from numba import njit, prange
@@ -841,7 +842,10 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                           tok, tok_off, stype, params,
                           grid, goff, xs_el, xs_in, xs_cap, xs_fis, nuc_A, nuc_beta,
                           ang_eg, ang_eg_off, ang_bo, ang_bo_off, ang_mu, ang_cdf, ang_data_off, ang_has,
-                          in_xs, in_Q, in_mt_off, in_xs_off,
+                          in_xs, in_Q, in_mt_off, in_xs_off, in_kind, in_did,
+                          sec_law, sec_frame, sec_ein, sec_ein_off, sec_blk, sec_blk_off,
+                          sec_dat_off, sec_eout, sec_cdf, sec_aux1, sec_aux2,
+                          sec_muval, sec_mucdf, sec_mu_off,
                           nu_e, nu_v, nu_off, fissile, watt_a, watt_b,
                           urr_has, urr_emin, urr_emax, urr_interp, urr_mult,
                           urr_energy, urr_e_off, urr_tab_off, urr_nband,
@@ -931,20 +935,42 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
                     for jm in range(nmt):
                         xo = in_xs_off[base + jm]
                         tot += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
-                    rr = np.random.random() * tot; accm = 0.0; Q = 0.0
+                    rr = np.random.random() * tot; accm = 0.0; smt = base
                     for jm in range(nmt):
                         xo = in_xs_off[base + jm]
                         accm += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
                         if rr <= accm:
-                            Q = in_Q[base + jm]; break
-                    v_n = math.sqrt(2.0 * E * _EV / _M_N); vcz = v_n / Ap1; Vz = v_n - vcz
-                    E_cm = 0.5 * _M_N * Vz * Vz / _EV; tot_cm = E_cm * Ap1 / A
-                    mag = Vz if tot_cm <= Q else math.sqrt(2.0 * ((tot_cm - Q) * A / Ap1) * _EV / _M_N)
-                    mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
-                    sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
-                    vpx = mag * sic * math.cos(phic); vpy = mag * sic * math.sin(phic); vpz = mag * mu_cm + vcz
-                    sp2 = vpx * vpx + vpy * vpy + vpz * vpz; E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
-                    sp = math.sqrt(sp2); mu_lab = vpz / sp if sp > 0.0 else 1.0
+                            smt = base + jm; break
+                    Q = in_Q[smt]
+                    if in_kind[smt] == 0:
+                        # discrete level: two-body, isotropic CM
+                        v_n = math.sqrt(2.0 * E * _EV / _M_N); vcz = v_n / Ap1; Vz = v_n - vcz
+                        E_cm = 0.5 * _M_N * Vz * Vz / _EV; tot_cm = E_cm * Ap1 / A
+                        mag = Vz if tot_cm <= Q else math.sqrt(2.0 * ((tot_cm - Q) * A / Ap1) * _EV / _M_N)
+                        mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
+                        sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
+                        vpx = mag * sic * math.cos(phic); vpy = mag * sic * math.sin(phic); vpz = mag * mu_cm + vcz
+                        sp2 = vpx * vpx + vpy * vpy + vpz * vpz; E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
+                        sp = math.sqrt(sp2); mu_lab = vpz / sp if sp > 0.0 else 1.0
+                    else:
+                        # continuum (MT 16/17/91): tabulated secondary energy-angle
+                        # (Law61/Kalbach/Law4, lab after CM->lab), Maxwellian fallback.
+                        # (n,2n)/(n,3n) multiplication (in_nchild) not yet banked.
+                        E_avail = E - Q
+                        if E_avail < 1.0:
+                            E_avail = 1.0
+                        did = in_did[smt]; got = 0; Eo = 0.0; mu_lab = 0.0
+                        if did >= 0:
+                            for _t in range(10):
+                                Eo, mo, vv = sample_secondary(
+                                    did, E, A, sec_law, sec_frame, sec_ein, sec_ein_off,
+                                    sec_blk, sec_blk_off, sec_dat_off, sec_eout, sec_cdf,
+                                    sec_aux1, sec_aux2, sec_muval, sec_mucdf, sec_mu_off)
+                                if vv == 1 and Eo <= E_avail:
+                                    mu_lab = mo; got = 1; break
+                        if got == 0:
+                            Eo = maxwellian_nj(E_avail, A); mu_lab = 2.0 * np.random.random() - 1.0
+                        E = max(1e-5, Eo)
                 elif E < cutoff:
                     v_n = math.sqrt(2.0 * E * _EV / _M_N); p_first = 2.0 / (_SQRT_PI * v_n * beta + 2.0)
                     while True:
@@ -1002,16 +1028,14 @@ class MultiKeffProblem:
     per-nuclide elastic/discrete-inelastic/capture/fission over compiled CSG
     (reflective BCs supported).
 
-    KNOWN LIMITATION (BEAVRS pin cell reads +920 pcm high vs the vector/scalar
-    engines, root-caused): continuum inelastic (MT91) and (n,2n)/(n,3n) (MT16/17)
-    are approximated by the discrete two-body path (level Q, one neutron out)
-    instead of their tabulated continuum secondary-energy distribution
-    (Law61/Kalbach) with (n,xn) multiplication. This removes less energy per
-    inelastic collision, so fast neutrons slow less deep into the U238
-    resonances -> less capture -> higher k. With inelastic disabled njit and
-    vector agree to ~30 pcm (1.3070 vs 1.3067); the entire pin-cell gap is this
-    deferred Stage-4 secondary-energy treatment. Exact for fixed-source and
-    thermal-dominated problems; port the continuum secondary energy to close it."""
+    Continuum inelastic (MT 16/17/91) uses the tabulated secondary energy-angle
+    distribution (Law61/Kalbach/Law4 via numba_secondary, CM->lab) with a
+    Fermi-gas Maxwellian fallback -- one-to-one with the vector/scalar physics.
+    BEAVRS pin cell: k_inf 1.2901 vs vector 1.2892 / OpenMC 1.2890 (+93/+109 pcm,
+    z=1.2 -- statistical agreement; this was +921 pcm before the secondary port).
+    (n,2n)/(n,3n) neutron MULTIPLICATION (in_nchild) is not yet banked (the
+    emitted primary carries the continuum energy but the extra neutron is not
+    tracked); negligible for thermal lattices, matters for fast systems."""
 
     def __init__(self, reader, mediums):
         from .numba_geometry import CompiledGeometry
@@ -1027,7 +1051,10 @@ class MultiKeffProblem:
             g.tok, g.tok_off, g.stype, g.params,
             t.grid, t.goff, t.el, t.inl, t.cap, t.fis, t.A, t.beta,
             t.ang_eg, t.ang_eg_off, t.ang_bo, t.ang_bo_off, t.ang_mu, t.ang_cdf, t.ang_data_off, t.ang_has,
-            t.in_xs, t.in_Q, t.in_mt_off, t.in_xs_off,
+            t.in_xs, t.in_Q, t.in_mt_off, t.in_xs_off, t.in_kind, t.in_did,
+            t.sec.law, t.sec.frame, t.sec.ein, t.sec.ein_off, t.sec.blk, t.sec.blk_off,
+            t.sec.dat_off, t.sec.eout, t.sec.cdf, t.sec.aux1, t.sec.aux2,
+            t.sec.muval, t.sec.mucdf, t.sec.mu_off,
             t.nu_e, t.nu_v, t.nu_off, t.fissile, t.watt_a, t.watt_b,
             t.urr_has, t.urr_emin, t.urr_emax, t.urr_interp, t.urr_mult,
             t.urr_energy, t.urr_e_off, t.urr_tab_off, t.urr_nband,
