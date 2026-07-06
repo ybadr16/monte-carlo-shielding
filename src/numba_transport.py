@@ -327,3 +327,218 @@ class NumbaProblem:
             self.inel_xs, self.inel_Q, self.n_inel,
             self.A, self.beta, THERMAL_CUTOFF, wcut, rsurv, eps, max_events)
         return {"leaked_weight": lw, "escape_energy": le}
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: multi-nuclide fixed-source (elastic + capture + isotope selection)
+# ---------------------------------------------------------------------------
+
+@njit(fastmath=True, cache=True)
+def _sample_mu_tab_k(E, k, eg_off, bo_off, data_off, ang_eg, ang_bo, ang_mu, ang_cdf):
+    """Tabulated CM cosine for nuclide k (flat ragged angular arrays)."""
+    e0 = eg_off[k]; e1 = eg_off[k + 1]
+    ne = e1 - e0
+    if ne < 2:
+        return 2.0 * np.random.random() - 1.0
+    eg = ang_eg[e0:e1]
+    if E <= eg[0]:
+        idx = 0
+    elif E >= eg[ne - 1]:
+        idx = ne - 2
+    else:
+        lo = 0; hi = ne - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if eg[mid] <= E:
+                lo = mid
+            else:
+                hi = mid
+        idx = lo
+    f = (E - eg[idx]) / (eg[idx + 1] - eg[idx])
+    if f < 0.0: f = 0.0
+    elif f > 1.0: f = 1.0
+    block = idx if np.random.random() > f else idx + 1
+    bo = ang_bo[bo_off[k]:bo_off[k + 1]]
+    d0 = data_off[k]
+    s = d0 + bo[block]; e = d0 + bo[block + 1]
+    r = np.random.random()
+    if r <= ang_cdf[s]:
+        return ang_mu[s]
+    if r >= ang_cdf[e - 1]:
+        return ang_mu[e - 1]
+    lo = s; hi = e - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if ang_cdf[mid] <= r:
+            lo = mid
+        else:
+            hi = mid
+    c0 = ang_cdf[lo]; c1 = ang_cdf[hi]
+    if c1 == c0:
+        return ang_mu[lo]
+    return ang_mu[lo] + (r - c0) / (c1 - c0) * (ang_mu[hi] - ang_mu[lo])
+
+
+@njit(parallel=True, cache=True)
+def transport_fixed_multi(x0, y0, z0, u0, v0, w0, E0,
+                          n_media, prim, prim_off, priority, is_void, bc,
+                          tok, tok_off, stype, params,
+                          grid, goff, xs_el, xs_cap, nuc_A, nuc_beta,
+                          ang_eg, ang_eg_off, ang_bo, ang_bo_off,
+                          ang_mu, ang_cdf, ang_data_off, ang_has,
+                          med_off, med_nuc, med_N,
+                          cutoff, wcut, rsurv, eps, max_events):
+    n = x0.size
+    lw = np.zeros(n)
+    le = np.zeros(n)
+    for i in prange(n):
+        x = x0[i]; y = y0[i]; z = z0[i]
+        u = u0[i]; v = v0[i]; w = w0[i]
+        E = E0[i]; wt = 1.0
+        el_k = np.empty(64)
+        for _ev in range(max_events):
+            m = resolve_medium(n_media, priority, tok, tok_off, stype, params, x, y, z)
+            if m < 0:
+                lw[i] = wt; le[i] = E; break
+            dist, s_surf = nearest_crossing(n_media, prim, prim_off, priority,
+                                            tok, tok_off, stype, params,
+                                            x, y, z, u, v, w)
+            if s_surf < 0:
+                lw[i] = wt; le[i] = E; break
+
+            crossed = False
+            ms = med_off[m]; me = med_off[m + 1]; nk = me - ms
+            Sig_el = 0.0; Sig_cap = 0.0
+            sig_t = 0.0
+            if is_void[m] == 1:
+                crossed = True; s = 1e30
+            else:
+                for j in range(nk):
+                    gk = med_nuc[ms + j]; Nk = med_N[ms + j]
+                    g0 = goff[gk]; g1 = goff[gk + 1]
+                    ej = _interp1(grid[g0:g1], xs_el[g0:g1], E) * Nk
+                    cj = _interp1(grid[g0:g1], xs_cap[g0:g1], E) * Nk
+                    el_k[j] = ej
+                    Sig_el += ej; Sig_cap += cj
+                sig_t = Sig_el + Sig_cap
+                if sig_t <= 0.0:
+                    lw[i] = wt; le[i] = E; break
+                s = -math.log(1.0 - np.random.random()) / sig_t
+                if s > dist:
+                    crossed = True
+
+            if crossed:
+                px = x + dist * u; py = y + dist * v; pz = z + dist * w
+                if bc[s_surf] == 1:
+                    nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
+                    dot = u * nx + v * ny + w * nz
+                    u = u - 2.0 * dot * nx; v = v - 2.0 * dot * ny; w = w - 2.0 * dot * nz
+                    st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
+                    x = px + st * nx; y = py + st * ny; z = pz + st * nz
+                else:
+                    x = px + eps * u; y = py + eps * v; z = pz + eps * w
+                continue
+
+            x += s * u; y += s * v; z += s * w
+            if not contains_medium(m, tok, tok_off, stype, params, x, y, z):
+                continue
+            if wt < wcut:
+                if np.random.random() < rsurv:
+                    wt /= rsurv
+                else:
+                    break
+            wt *= Sig_el / sig_t
+            if wt <= 0.0:
+                break
+            roll = np.random.random() * Sig_el
+            acc = 0.0; sel = 0
+            for j in range(nk):
+                acc += el_k[j]
+                if roll <= acc:
+                    sel = j; break
+            gk = med_nuc[ms + sel]; A = nuc_A[gk]; beta = nuc_beta[gk]; Ap1 = A + 1.0
+            if E < cutoff:
+                v_n = math.sqrt(2.0 * E * _EV / _M_N)
+                p_first = 2.0 / (_SQRT_PI * v_n * beta + 2.0)
+                while True:
+                    r1 = np.random.random(); r2 = np.random.random(); r3 = np.random.random()
+                    r4 = np.random.random(); r5 = np.random.random()
+                    if np.random.random() < p_first:
+                        xx = math.sqrt(-math.log((1.0 - r1) * (1.0 - r2)))
+                    else:
+                        cc = math.cos(0.5 * math.pi * r3)
+                        xx = math.sqrt(-math.log(1.0 - r1) - math.log(1.0 - r2) * cc * cc)
+                    v_t = xx / beta; mu_t = 2.0 * r4 - 1.0
+                    acc2 = math.sqrt(v_n * v_n + v_t * v_t - 2.0 * v_n * v_t * mu_t) / (v_n + v_t)
+                    if r5 < acc2:
+                        break
+                phi_t = 2.0 * math.pi * np.random.random()
+                sin_t = math.sqrt(max(0.0, 1.0 - mu_t * mu_t)) if v_t > 0.0 else 0.0
+                vtx = v_t * sin_t * math.cos(phi_t) if v_t > 0.0 else 0.0
+                vty = v_t * sin_t * math.sin(phi_t) if v_t > 0.0 else 0.0
+                vtz = v_t * mu_t if v_t > 0.0 else 0.0
+                vcx = A * vtx / Ap1; vcy = A * vty / Ap1; vcz = (v_n + A * vtz) / Ap1
+                Vx = -vcx; Vy = -vcy; Vz = v_n - vcz
+                Vmag = math.sqrt(Vx * Vx + Vy * Vy + Vz * Vz)
+                mu_cm = 2.0 * np.random.random() - 1.0
+                phi_cm = 2.0 * math.pi * np.random.random()
+                sin_cm = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
+                vpx = Vmag * sin_cm * math.cos(phi_cm) + vcx
+                vpy = Vmag * sin_cm * math.sin(phi_cm) + vcy
+                vpz = Vmag * mu_cm + vcz
+                sp2 = vpx * vpx + vpy * vpy + vpz * vpz
+                E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
+                sp = math.sqrt(sp2)
+                mu_lab = vpz / sp if sp > 0.0 else 1.0
+            else:
+                if ang_has[gk] == 1:
+                    mu_cm = _sample_mu_tab_k(E, gk, ang_eg_off, ang_bo_off,
+                                             ang_data_off, ang_eg, ang_bo, ang_mu, ang_cdf)
+                else:
+                    mu_cm = 2.0 * np.random.random() - 1.0
+                term = A * A + 1.0 + 2.0 * A * mu_cm
+                E = max(1e-5, E * term / (Ap1 * Ap1))
+                mu_lab = (1.0 + A * mu_cm) / math.sqrt(term)
+            if mu_lab > 1.0: mu_lab = 1.0
+            elif mu_lab < -1.0: mu_lab = -1.0
+            phi = 2.0 * math.pi * np.random.random()
+            cphi = math.cos(phi); sphi = math.sin(phi)
+            st = math.sqrt(max(0.0, 1.0 - mu_lab * mu_lab))
+            if abs(w) >= 0.999999:
+                sign = 1.0 if w > 0.0 else -1.0
+                u = st * cphi; v = st * sphi; w = sign * mu_lab
+            else:
+                dn = math.sqrt(max(1e-12, 1.0 - w * w)); rt = st / dn
+                un = mu_lab * u + rt * (u * w * cphi - v * sphi)
+                vv = mu_lab * v + rt * (v * w * cphi + u * sphi)
+                wn = mu_lab * w - st * dn * cphi
+                nn = math.sqrt(un * un + vv * vv + wn * wn)
+                u = un / nn; v = vv / nn; w = wn / nn
+    return lw, le
+
+
+class MultiNumbaProblem:
+    """Stage-2 multi-nuclide fixed-source problem (elastic + capture)."""
+
+    def __init__(self, reader, mediums):
+        from .numba_geometry import CompiledGeometry
+        from .numba_materials import compile_media
+        self.geo = CompiledGeometry(mediums)
+        self.tbl, self.med_off, self.med_nuc, self.med_N = compile_media(reader, mediums)
+
+    def run(self, source, wcut=1e-4, rsurv=0.1, eps=1e-6, max_events=100000):
+        g = self.geo; t = self.tbl
+        x = np.ascontiguousarray(source["x"], float); y = np.ascontiguousarray(source["y"], float)
+        z = np.ascontiguousarray(source["z"], float); u = np.ascontiguousarray(source["u"], float)
+        v = np.ascontiguousarray(source["v"], float); w = np.ascontiguousarray(source["w"], float)
+        E = np.ascontiguousarray(source["energy"], float)
+        lw, le = transport_fixed_multi(
+            x, y, z, u, v, w, E,
+            g.n_media, g.prim, g.prim_off, g.priority, g.is_void, g.bc,
+            g.tok, g.tok_off, g.stype, g.params,
+            t.grid, t.goff, t.el, t.cap, t.A, t.beta,
+            t.ang_eg, t.ang_eg_off, t.ang_bo, t.ang_bo_off,
+            t.ang_mu, t.ang_cdf, t.ang_data_off, t.ang_has,
+            self.med_off, self.med_nuc, self.med_N,
+            THERMAL_CUTOFF, wcut, rsurv, eps, max_events)
+        return {"leaked_weight": lw, "escape_energy": le}
