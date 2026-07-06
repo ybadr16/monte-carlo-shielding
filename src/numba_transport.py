@@ -542,3 +542,224 @@ class MultiNumbaProblem:
             self.med_off, self.med_nuc, self.med_N,
             THERMAL_CUTOFF, wcut, rsurv, eps, max_events)
         return {"leaked_weight": lw, "escape_energy": le}
+
+
+# ---------------------------------------------------------------------------
+# Stage 3a: single-nuclide analog criticality (fission + Watt + power iteration)
+# ---------------------------------------------------------------------------
+
+@njit(fastmath=True, cache=True)
+def _watt_sample(a, b):
+    """Watt fission energy (eV), Maxwellian-shift method (mirrors physics)."""
+    r1 = np.random.random(); r2 = np.random.random(); r3 = np.random.random()
+    w = a * (-math.log(r1) - math.log(r2) * math.cos(math.pi * r3 / 2.0) ** 2)
+    a2b = a * a * b
+    return w + a2b / 4.0 + (2.0 * np.random.random() - 1.0) * math.sqrt(a2b * w)
+
+
+@njit(parallel=True, cache=True)
+def keff_generation_single(x0, y0, z0, u0, v0, w0, E0,
+                           n_media, prim, prim_off, priority, is_void, bc,
+                           tok, tok_off, stype, params,
+                           grid, el_mac, in_mac, cap_mac, fis_mac,
+                           nu_grid, nu_val, watt_a, watt_b,
+                           ang_eg, ang_off, ang_mu, ang_cdf, has_ang,
+                           inel_xs, inel_Q, n_inel,
+                           A, beta, cutoff, eps, max_events, maxf):
+    """One fission generation, analog, single fissile nuclide. Returns per-history
+    fission-production (collision estimator) and a preallocated fission bank."""
+    n = x0.size
+    fp = np.zeros(n)
+    fb_x = np.zeros((n, maxf)); fb_y = np.zeros((n, maxf)); fb_z = np.zeros((n, maxf))
+    fb_u = np.zeros((n, maxf)); fb_v = np.zeros((n, maxf)); fb_w = np.zeros((n, maxf))
+    fb_E = np.zeros((n, maxf)); fb_c = np.zeros(n, np.int64)
+    Ap1 = A + 1.0
+    for i in prange(n):
+        x = x0[i]; y = y0[i]; z = z0[i]
+        u = u0[i]; v = v0[i]; w = w0[i]; E = E0[i]
+        for _ev in range(max_events):
+            m = resolve_medium(n_media, priority, tok, tok_off, stype, params, x, y, z)
+            if m < 0:
+                break
+            dist, s_surf = nearest_crossing(n_media, prim, prim_off, priority,
+                                            tok, tok_off, stype, params, x, y, z, u, v, w)
+            if s_surf < 0:
+                break
+            if is_void[m] == 1:
+                px = x + dist * u; py = y + dist * v; pz = z + dist * w
+                if bc[s_surf] == 1:
+                    nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
+                    dot = u * nx + v * ny + w * nz
+                    u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
+                    st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
+                    x = px + st * nx; y = py + st * ny; z = pz + st * nz
+                else:
+                    x = px + eps * u; y = py + eps * v; z = pz + eps * w
+                continue
+            sig_el = _interp1(grid, el_mac, E); sig_in = _interp1(grid, in_mac, E)
+            sig_cap = _interp1(grid, cap_mac, E); sig_fis = _interp1(grid, fis_mac, E)
+            sig_t = sig_el + sig_in + sig_cap + sig_fis
+            if sig_t <= 0.0:
+                break
+            s = -math.log(1.0 - np.random.random()) / sig_t
+            if s > dist:
+                px = x + dist * u; py = y + dist * v; pz = z + dist * w
+                if bc[s_surf] == 1:
+                    nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
+                    dot = u * nx + v * ny + w * nz
+                    u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
+                    st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
+                    x = px + st * nx; y = py + st * ny; z = pz + st * nz
+                else:
+                    x = px + eps * u; y = py + eps * v; z = pz + eps * w
+                continue
+            x += s * u; y += s * v; z += s * w
+            if not contains_medium(m, tok, tok_off, stype, params, x, y, z):
+                continue
+            # collision estimator of fission production
+            if sig_fis > 0.0:
+                fp[i] += _interp1(nu_grid, nu_val, E) * sig_fis / sig_t
+            # analog reaction selection
+            roll = np.random.random() * sig_t
+            if roll < sig_el + sig_in:
+                inelastic = roll >= sig_el
+                if inelastic and n_inel > 0:
+                    tot = 0.0
+                    for j in range(n_inel):
+                        tot += _interp1(grid, inel_xs[j], E)
+                    rr = np.random.random() * tot; acc = 0.0; Q = 0.0
+                    for j in range(n_inel):
+                        acc += _interp1(grid, inel_xs[j], E)
+                        if rr <= acc:
+                            Q = inel_Q[j]; break
+                    v_n = math.sqrt(2.0 * E * _EV / _M_N); vcz = v_n / Ap1; Vz = v_n - vcz
+                    E_cm = 0.5 * _M_N * Vz * Vz / _EV; tot_cm = E_cm * Ap1 / A
+                    mag = Vz if tot_cm <= Q else math.sqrt(2.0 * ((tot_cm - Q) * A / Ap1) * _EV / _M_N)
+                    mu_cm = 2.0 * np.random.random() - 1.0
+                    phic = 2.0 * math.pi * np.random.random(); sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
+                    vpx = mag * sic * math.cos(phic); vpy = mag * sic * math.sin(phic); vpz = mag * mu_cm + vcz
+                    sp2 = vpx * vpx + vpy * vpy + vpz * vpz
+                    E = max(1e-5, 0.5 * _M_N * sp2 / _EV); sp = math.sqrt(sp2)
+                    mu_lab = vpz / sp if sp > 0.0 else 1.0
+                else:
+                    if E < cutoff:
+                        v_n = math.sqrt(2.0 * E * _EV / _M_N)
+                        p_first = 2.0 / (_SQRT_PI * v_n * beta + 2.0)
+                        while True:
+                            r1 = np.random.random(); r2 = np.random.random(); r3 = np.random.random()
+                            r4 = np.random.random(); r5 = np.random.random()
+                            xx = (math.sqrt(-math.log((1.0 - r1) * (1.0 - r2))) if np.random.random() < p_first
+                                  else math.sqrt(-math.log(1.0 - r1) - math.log(1.0 - r2) * math.cos(0.5 * math.pi * r3) ** 2))
+                            v_t = xx / beta; mu_t = 2.0 * r4 - 1.0
+                            if r5 < math.sqrt(v_n * v_n + v_t * v_t - 2.0 * v_n * v_t * mu_t) / (v_n + v_t):
+                                break
+                        phit = 2.0 * math.pi * np.random.random(); sit = math.sqrt(max(0.0, 1.0 - mu_t * mu_t)) if v_t > 0 else 0.0
+                        vtx = v_t * sit * math.cos(phit) if v_t > 0 else 0.0
+                        vty = v_t * sit * math.sin(phit) if v_t > 0 else 0.0
+                        vtz = v_t * mu_t if v_t > 0 else 0.0
+                        vcx = A * vtx / Ap1; vcy = A * vty / Ap1; vcz = (v_n + A * vtz) / Ap1
+                        Vmag = math.sqrt(vcx * vcx + vcy * vcy + (v_n - vcz) ** 2)
+                        mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
+                        sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
+                        vpx = Vmag * sic * math.cos(phic) + vcx; vpy = Vmag * sic * math.sin(phic) + vcy; vpz = Vmag * mu_cm + vcz
+                        sp2 = vpx * vpx + vpy * vpy + vpz * vpz
+                        E = max(1e-5, 0.5 * _M_N * sp2 / _EV); sp = math.sqrt(sp2)
+                        mu_lab = vpz / sp if sp > 0.0 else 1.0
+                    else:
+                        mu_cm = _sample_mu_tab(E, ang_eg, ang_off, ang_mu, ang_cdf) if has_ang == 1 else 2.0 * np.random.random() - 1.0
+                        term = A * A + 1.0 + 2.0 * A * mu_cm
+                        E = max(1e-5, E * term / (Ap1 * Ap1)); mu_lab = (1.0 + A * mu_cm) / math.sqrt(term)
+                if mu_lab > 1.0: mu_lab = 1.0
+                elif mu_lab < -1.0: mu_lab = -1.0
+                phi = 2.0 * math.pi * np.random.random(); cphi = math.cos(phi); sphi = math.sin(phi)
+                sti = math.sqrt(max(0.0, 1.0 - mu_lab * mu_lab))
+                if abs(w) >= 0.999999:
+                    sign = 1.0 if w > 0.0 else -1.0
+                    u = sti * cphi; v = sti * sphi; w = sign * mu_lab
+                else:
+                    dn = math.sqrt(max(1e-12, 1.0 - w * w)); rt = sti / dn
+                    un = mu_lab * u + rt * (u * w * cphi - v * sphi)
+                    vv = mu_lab * v + rt * (v * w * cphi + u * sphi)
+                    wn = mu_lab * w - sti * dn * cphi
+                    nn = math.sqrt(un * un + vv * vv + wn * wn)
+                    u = un / nn; v = vv / nn; w = wn / nn
+            elif roll < sig_el + sig_in + sig_cap:
+                break  # capture
+            else:
+                # fission: bank nu prompt neutrons at (x,y,z), Watt energies, isotropic
+                nu = int(_interp1(nu_grid, nu_val, E) + np.random.random())
+                if nu > maxf:
+                    nu = maxf
+                for j in range(nu):
+                    mu = 2.0 * np.random.random() - 1.0; ph = 2.0 * math.pi * np.random.random()
+                    ss = math.sqrt(max(0.0, 1.0 - mu * mu))
+                    fb_x[i, j] = x; fb_y[i, j] = y; fb_z[i, j] = z
+                    fb_u[i, j] = ss * math.cos(ph); fb_v[i, j] = ss * math.sin(ph); fb_w[i, j] = mu
+                    fb_E[i, j] = _watt_sample(watt_a, watt_b)
+                fb_c[i] = nu
+                break
+    return fp, fb_x, fb_y, fb_z, fb_u, fb_v, fb_w, fb_E, fb_c
+
+
+class SingleKeffProblem:
+    """Stage-3a single-fissile-nuclide analog criticality via the njit generation
+    kernel + a Python power-iteration driver. Elastic + discrete inelastic +
+    capture + fission (nu-bar + Watt bank). Fast systems with significant
+    (n,2n)/(n,3n) or continuum-inelastic multiplication need Stage 4 (not ported);
+    thermal lattices do not."""
+
+    def __init__(self, reader, mediums, element, N, A, beta):
+        from .physics import watt_params_for
+        self.geo = CompiledGeometry(mediums)
+        reader._build_fast_table(element)
+        tbl = reader._fast_tables[element]
+        sc = 1e-24 * N
+        self.grid = np.ascontiguousarray(tbl["grid"])
+        self.el = np.ascontiguousarray(tbl["el"] * sc)
+        self.inl = np.ascontiguousarray(tbl["in"] * sc)
+        self.cap = np.ascontiguousarray(tbl["cap"] * sc)
+        self.fis = np.ascontiguousarray(tbl["fis"] * sc)
+        reader._load_nu(element)
+        nue, nuv = reader._nu_cache[element]
+        self.nu_e = np.ascontiguousarray(nue, float)
+        self.nu_v = np.ascontiguousarray(nuv, float)
+        self.wa, self.wb = watt_params_for(element)
+        self.ang = _angular_arrays(reader, element)
+        self.inel_xs, self.inel_Q, self.n_inel = _inelastic_arrays(reader, element, self.grid, N)
+        self.A = float(A); self.beta = float(beta)
+
+    def _generation(self, src, maxf=8, eps=1e-6, max_events=100000):
+        g = self.geo
+        return keff_generation_single(
+            *(np.ascontiguousarray(src[k]) for k in ("x", "y", "z", "u", "v", "w", "energy")),
+            g.n_media, g.prim, g.prim_off, g.priority, g.is_void, g.bc,
+            g.tok, g.tok_off, g.stype, g.params,
+            self.grid, self.el, self.inl, self.cap, self.fis,
+            self.nu_e, self.nu_v, self.wa, self.wb,
+            self.ang[0], self.ang[1], self.ang[2], self.ang[3], self.ang[4],
+            self.inel_xs, self.inel_Q, self.n_inel,
+            self.A, self.beta, THERMAL_CUTOFF, eps, max_events, maxf)
+
+    def run_keff(self, initial_source, generations=90, inactive=30, seed=1, maxf=8):
+        from .statistics import mean_sem
+        r = np.random.default_rng(seed)
+        src = {k: np.array(initial_source[k], float) for k in
+               ("x", "y", "z", "u", "v", "w", "energy")}
+        n = src["x"].size
+        active, cyc = [], []
+        for gen in range(generations):
+            fp, fx, fy, fz, fu, fv, fw, fE, fc = self._generation(src, maxf)
+            k = float(fp.sum()) / n
+            mask = np.arange(maxf)[None, :] < fc[:, None]
+            bx, by, bz, bu, bv, bw, bE = (a[mask] for a in (fx, fy, fz, fu, fv, fw, fE))
+            produced = int(fc.sum())
+            cyc.append((gen, k, produced / n, gen >= inactive))
+            if gen >= inactive:
+                active.append(k)
+            if produced == 0:
+                break
+            pick = r.choice(produced, size=n, replace=produced < n)
+            src = {"x": bx[pick], "y": by[pick], "z": bz[pick],
+                   "u": bu[pick], "v": bv[pick], "w": bw[pick], "energy": bE[pick]}
+        keff, ksem = mean_sem(active)
+        return {"k_eff": keff, "k_sem": ksem, "active_k": active, "cycles": cyc}
