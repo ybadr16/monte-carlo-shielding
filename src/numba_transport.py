@@ -763,3 +763,286 @@ class SingleKeffProblem:
                    "u": bu[pick], "v": bv[pick], "w": bw[pick], "energy": bE[pick]}
         keff, ksem = mean_sem(active)
         return {"k_eff": keff, "k_sem": ksem, "active_k": active, "cycles": cyc}
+
+
+@njit(fastmath=True, cache=True)
+def _ss_right(arr, start, nb, r):
+    b = 0
+    while b < nb and arr[start + b] <= r:
+        b += 1
+    return b
+
+
+@njit(fastmath=True, cache=True)
+def _urr_sample(E, k, mic_el, mic_cap, mic_fis, r,
+                urr_energy, urr_e_off, urr_tab_off, urr_nband, urr_interp, urr_mult,
+                urr_cumul, urr_el, urr_fis, urr_cap):
+    """Self-shielded (el, cap, fis) micro xs from nuclide k's URR probability
+    table at energy E with random r. Mirrors reader._urr_micro_xs."""
+    e0 = urr_e_off[k]; e1 = urr_e_off[k + 1]; ne = e1 - e0
+    # locate bracket (searchsorted right - 1)
+    i = 0
+    if E <= urr_energy[e0]:
+        i = 0
+    elif E >= urr_energy[e1 - 1]:
+        i = ne - 2
+    else:
+        lo = 0; hi = ne - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if urr_energy[e0 + mid] <= E:
+                lo = mid
+            else:
+                hi = mid
+        i = lo
+    if i < 0: i = 0
+    if i > ne - 2: i = ne - 2
+    E0 = urr_energy[e0 + i]; E1 = urr_energy[e0 + i + 1]
+    log_interp = urr_interp[k] == 5
+    if log_interp and E0 > 0.0 and E1 > 0.0 and E > 0.0 and E1 != E0:
+        f = math.log(E / E0) / math.log(E1 / E0)
+    else:
+        f = 0.0 if E1 == E0 else (E - E0) / (E1 - E0)
+    if f < 0.0: f = 0.0
+    elif f > 1.0: f = 1.0
+    nb = urr_nband[k]; toff = urr_tab_off[k]
+    row_i = toff + i * nb; row_i1 = toff + (i + 1) * nb
+    b0 = _ss_right(urr_cumul, row_i, nb, r)
+    if b0 > nb - 1: b0 = nb - 1
+    b1 = _ss_right(urr_cumul, row_i1, nb, r)
+    if b1 > nb - 1: b1 = nb - 1
+    ve0 = urr_el[row_i + b0]; ve1 = urr_el[row_i1 + b1]
+    vf0 = urr_fis[row_i + b0]; vf1 = urr_fis[row_i1 + b1]
+    vc0 = urr_cap[row_i + b0]; vc1 = urr_cap[row_i1 + b1]
+    if log_interp and ve0 > 0.0 and ve1 > 0.0:
+        el = math.exp((1 - f) * math.log(ve0) + f * math.log(ve1))
+    else:
+        el = (1 - f) * ve0 + f * ve1
+    if log_interp and vf0 > 0.0 and vf1 > 0.0:
+        fis = math.exp((1 - f) * math.log(vf0) + f * math.log(vf1))
+    else:
+        fis = (1 - f) * vf0 + f * vf1
+    if log_interp and vc0 > 0.0 and vc1 > 0.0:
+        cap = math.exp((1 - f) * math.log(vc0) + f * math.log(vc1))
+    else:
+        cap = (1 - f) * vc0 + f * vc1
+    if urr_mult[k] == 1:
+        el *= mic_el; fis *= mic_fis; cap *= mic_cap
+    return el, cap, fis
+
+
+# ---------------------------------------------------------------------------
+# Stage 3b: multi-nuclide analog criticality (isotope selection + URR + fission)
+# ---------------------------------------------------------------------------
+
+@njit(parallel=True, cache=True)
+def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
+                          n_media, prim, prim_off, priority, is_void, bc,
+                          tok, tok_off, stype, params,
+                          grid, goff, xs_el, xs_in, xs_cap, xs_fis, nuc_A, nuc_beta,
+                          ang_eg, ang_eg_off, ang_bo, ang_bo_off, ang_mu, ang_cdf, ang_data_off, ang_has,
+                          in_xs, in_Q, in_mt_off, in_xs_off,
+                          nu_e, nu_v, nu_off, fissile, watt_a, watt_b,
+                          urr_has, urr_emin, urr_emax, urr_interp, urr_mult,
+                          urr_energy, urr_e_off, urr_tab_off, urr_nband,
+                          urr_cumul, urr_el, urr_fis, urr_cap,
+                          med_off, med_nuc, med_N, cutoff, eps, max_events, maxf):
+    n = x0.size
+    fp = np.zeros(n)
+    fb_x = np.zeros((n, maxf)); fb_y = np.zeros((n, maxf)); fb_z = np.zeros((n, maxf))
+    fb_u = np.zeros((n, maxf)); fb_v = np.zeros((n, maxf)); fb_w = np.zeros((n, maxf))
+    fb_E = np.zeros((n, maxf)); fb_c = np.zeros(n, np.int64)
+    for i in prange(n):
+        x = x0[i]; y = y0[i]; z = z0[i]; u = u0[i]; v = v0[i]; w = w0[i]; E = E0[i]
+        el_k = np.empty(64); in_k = np.empty(64); cap_k = np.empty(64)
+        fis_k = np.empty(64); tot_k = np.empty(64)
+        for _ev in range(max_events):
+            m = resolve_medium(n_media, priority, tok, tok_off, stype, params, x, y, z)
+            if m < 0:
+                break
+            dist, s_surf = nearest_crossing(n_media, prim, prim_off, priority,
+                                            tok, tok_off, stype, params, x, y, z, u, v, w)
+            if s_surf < 0:
+                break
+            ms = med_off[m]; me = med_off[m + 1]; nk = me - ms
+            if is_void[m] == 1:
+                px = x + dist * u; py = y + dist * v; pz = z + dist * w
+                if bc[s_surf] == 1:
+                    nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
+                    dot = u * nx + v * ny + w * nz
+                    u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
+                    st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
+                    x = px + st * nx; y = py + st * ny; z = pz + st * nz
+                else:
+                    x = px + eps * u; y = py + eps * v; z = pz + eps * w
+                continue
+            Sig_t = 0.0; fprod = 0.0
+            for j in range(nk):
+                gk = med_nuc[ms + j]; Nk = med_N[ms + j]
+                g0 = goff[gk]; g1 = goff[gk + 1]
+                e_ = _interp1(grid[g0:g1], xs_el[g0:g1], E)
+                i_ = _interp1(grid[g0:g1], xs_in[g0:g1], E)
+                c_ = _interp1(grid[g0:g1], xs_cap[g0:g1], E)
+                f_ = _interp1(grid[g0:g1], xs_fis[g0:g1], E)
+                if urr_has[gk] == 1 and urr_emin[gk] <= E <= urr_emax[gk]:
+                    e_, c_, f_ = _urr_sample(E, gk, e_, c_, f_, np.random.random(),
+                                             urr_energy, urr_e_off, urr_tab_off, urr_nband,
+                                             urr_interp, urr_mult, urr_cumul, urr_el, urr_fis, urr_cap)
+                ee = e_ * Nk; ii = i_ * Nk; cc = c_ * Nk; ff = f_ * Nk
+                el_k[j] = ee; in_k[j] = ii; cap_k[j] = cc; fis_k[j] = ff
+                tk = ee + ii + cc + ff; tot_k[j] = tk; Sig_t += tk
+                if fissile[gk] == 1 and ff > 0.0:
+                    fprod += _interp1(nu_e[nu_off[gk]:nu_off[gk + 1]],
+                                      nu_v[nu_off[gk]:nu_off[gk + 1]], E) * ff
+            if Sig_t <= 0.0:
+                break
+            s = -math.log(1.0 - np.random.random()) / Sig_t
+            if s > dist:
+                px = x + dist * u; py = y + dist * v; pz = z + dist * w
+                if bc[s_surf] == 1:
+                    nx, ny, nz = surf_normal(stype[s_surf], params[s_surf], px, py, pz)
+                    dot = u * nx + v * ny + w * nz
+                    u -= 2.0 * dot * nx; v -= 2.0 * dot * ny; w -= 2.0 * dot * nz
+                    st = eps if (u * nx + v * ny + w * nz) > 0.0 else -eps
+                    x = px + st * nx; y = py + st * ny; z = pz + st * nz
+                else:
+                    x = px + eps * u; y = py + eps * v; z = pz + eps * w
+                continue
+            x += s * u; y += s * v; z += s * w
+            if not contains_medium(m, tok, tok_off, stype, params, x, y, z):
+                continue
+            fp[i] += fprod / Sig_t
+            # isotope selection by total per-nuclide XS
+            roll = np.random.random() * Sig_t; acc = 0.0; sel = 0
+            for j in range(nk):
+                acc += tot_k[j]
+                if roll <= acc:
+                    sel = j; break
+            gk = med_nuc[ms + sel]; A = nuc_A[gk]; beta = nuc_beta[gk]; Ap1 = A + 1.0
+            el_ = el_k[sel]; in_ = in_k[sel]; cap_ = cap_k[sel]; fis_ = fis_k[sel]
+            tt = el_ + in_ + cap_ + fis_
+            roll2 = np.random.random() * tt
+            if roll2 < el_ + in_:
+                do_inel = roll2 >= el_
+                nmt = in_mt_off[gk + 1] - in_mt_off[gk]
+                if do_inel and nmt > 0:
+                    g0 = goff[gk]; g1 = goff[gk + 1]; base = in_mt_off[gk]
+                    tot = 0.0
+                    for jm in range(nmt):
+                        xo = in_xs_off[base + jm]
+                        tot += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
+                    rr = np.random.random() * tot; accm = 0.0; Q = 0.0
+                    for jm in range(nmt):
+                        xo = in_xs_off[base + jm]
+                        accm += _interp1(grid[g0:g1], in_xs[xo:xo + (g1 - g0)], E)
+                        if rr <= accm:
+                            Q = in_Q[base + jm]; break
+                    v_n = math.sqrt(2.0 * E * _EV / _M_N); vcz = v_n / Ap1; Vz = v_n - vcz
+                    E_cm = 0.5 * _M_N * Vz * Vz / _EV; tot_cm = E_cm * Ap1 / A
+                    mag = Vz if tot_cm <= Q else math.sqrt(2.0 * ((tot_cm - Q) * A / Ap1) * _EV / _M_N)
+                    mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
+                    sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
+                    vpx = mag * sic * math.cos(phic); vpy = mag * sic * math.sin(phic); vpz = mag * mu_cm + vcz
+                    sp2 = vpx * vpx + vpy * vpy + vpz * vpz; E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
+                    sp = math.sqrt(sp2); mu_lab = vpz / sp if sp > 0.0 else 1.0
+                elif E < cutoff:
+                    v_n = math.sqrt(2.0 * E * _EV / _M_N); p_first = 2.0 / (_SQRT_PI * v_n * beta + 2.0)
+                    while True:
+                        r1 = np.random.random(); r2 = np.random.random(); r3 = np.random.random()
+                        r4 = np.random.random(); r5 = np.random.random()
+                        xx = (math.sqrt(-math.log((1.0 - r1) * (1.0 - r2))) if np.random.random() < p_first
+                              else math.sqrt(-math.log(1.0 - r1) - math.log(1.0 - r2) * math.cos(0.5 * math.pi * r3) ** 2))
+                        v_t = xx / beta; mu_t = 2.0 * r4 - 1.0
+                        if r5 < math.sqrt(v_n * v_n + v_t * v_t - 2.0 * v_n * v_t * mu_t) / (v_n + v_t):
+                            break
+                    phit = 2.0 * math.pi * np.random.random(); sit = math.sqrt(max(0.0, 1.0 - mu_t * mu_t)) if v_t > 0 else 0.0
+                    vtx = v_t * sit * math.cos(phit) if v_t > 0 else 0.0; vty = v_t * sit * math.sin(phit) if v_t > 0 else 0.0
+                    vtz = v_t * mu_t if v_t > 0 else 0.0
+                    vcx = A * vtx / Ap1; vcy = A * vty / Ap1; vcz = (v_n + A * vtz) / Ap1
+                    Vmag = math.sqrt(vcx * vcx + vcy * vcy + (v_n - vcz) ** 2)
+                    mu_cm = 2.0 * np.random.random() - 1.0; phic = 2.0 * math.pi * np.random.random()
+                    sic = math.sqrt(max(0.0, 1.0 - mu_cm * mu_cm))
+                    vpx = Vmag * sic * math.cos(phic) + vcx; vpy = Vmag * sic * math.sin(phic) + vcy; vpz = Vmag * mu_cm + vcz
+                    sp2 = vpx * vpx + vpy * vpy + vpz * vpz; E = max(1e-5, 0.5 * _M_N * sp2 / _EV)
+                    sp = math.sqrt(sp2); mu_lab = vpz / sp if sp > 0.0 else 1.0
+                else:
+                    mu_cm = (_sample_mu_tab_k(E, gk, ang_eg_off, ang_bo_off, ang_data_off, ang_eg, ang_bo, ang_mu, ang_cdf)
+                             if ang_has[gk] == 1 else 2.0 * np.random.random() - 1.0)
+                    term = A * A + 1.0 + 2.0 * A * mu_cm
+                    E = max(1e-5, E * term / (Ap1 * Ap1)); mu_lab = (1.0 + A * mu_cm) / math.sqrt(term)
+                if mu_lab > 1.0: mu_lab = 1.0
+                elif mu_lab < -1.0: mu_lab = -1.0
+                phi = 2.0 * math.pi * np.random.random(); cphi = math.cos(phi); sphi = math.sin(phi)
+                sti = math.sqrt(max(0.0, 1.0 - mu_lab * mu_lab))
+                if abs(w) >= 0.999999:
+                    sign = 1.0 if w > 0.0 else -1.0; u = sti * cphi; v = sti * sphi; w = sign * mu_lab
+                else:
+                    dn = math.sqrt(max(1e-12, 1.0 - w * w)); rt = sti / dn
+                    un = mu_lab * u + rt * (u * w * cphi - v * sphi); vv = mu_lab * v + rt * (v * w * cphi + u * sphi)
+                    wn = mu_lab * w - sti * dn * cphi; nn = math.sqrt(un * un + vv * vv + wn * wn)
+                    u = un / nn; v = vv / nn; w = wn / nn
+            elif roll2 < el_ + in_ + cap_:
+                break
+            else:
+                nu = int(_interp1(nu_e[nu_off[gk]:nu_off[gk + 1]], nu_v[nu_off[gk]:nu_off[gk + 1]], E) + np.random.random())
+                if nu > maxf: nu = maxf
+                for jf in range(nu):
+                    mu = 2.0 * np.random.random() - 1.0; ph = 2.0 * math.pi * np.random.random()
+                    ss = math.sqrt(max(0.0, 1.0 - mu * mu))
+                    fb_x[i, jf] = x; fb_y[i, jf] = y; fb_z[i, jf] = z
+                    fb_u[i, jf] = ss * math.cos(ph); fb_v[i, jf] = ss * math.sin(ph); fb_w[i, jf] = mu
+                    fb_E[i, jf] = _watt_sample(watt_a[gk], watt_b[gk])
+                fb_c[i] = nu
+                break
+    return fp, fb_x, fb_y, fb_z, fb_u, fb_v, fb_w, fb_E, fb_c
+
+
+class MultiKeffProblem:
+    """Stage-3b multi-nuclide analog criticality: isotope selection + URR +
+    per-nuclide elastic/discrete-inelastic/capture/fission over compiled CSG
+    (reflective BCs supported). Thermal lattices; fast (n,2n) is Stage 4."""
+
+    def __init__(self, reader, mediums):
+        from .numba_geometry import CompiledGeometry
+        from .numba_materials import compile_media
+        self.geo = CompiledGeometry(mediums)
+        self.t, self.med_off, self.med_nuc, self.med_N = compile_media(reader, mediums)
+
+    def _generation(self, src, maxf=8, eps=1e-6, max_events=100000):
+        g = self.geo; t = self.t
+        return keff_generation_multi(
+            *(np.ascontiguousarray(src[k]) for k in ("x", "y", "z", "u", "v", "w", "energy")),
+            g.n_media, g.prim, g.prim_off, g.priority, g.is_void, g.bc,
+            g.tok, g.tok_off, g.stype, g.params,
+            t.grid, t.goff, t.el, t.inl, t.cap, t.fis, t.A, t.beta,
+            t.ang_eg, t.ang_eg_off, t.ang_bo, t.ang_bo_off, t.ang_mu, t.ang_cdf, t.ang_data_off, t.ang_has,
+            t.in_xs, t.in_Q, t.in_mt_off, t.in_xs_off,
+            t.nu_e, t.nu_v, t.nu_off, t.fissile, t.watt_a, t.watt_b,
+            t.urr_has, t.urr_emin, t.urr_emax, t.urr_interp, t.urr_mult,
+            t.urr_energy, t.urr_e_off, t.urr_tab_off, t.urr_nband,
+            t.urr_cumul, t.urr_el, t.urr_fis, t.urr_cap,
+            self.med_off, self.med_nuc, self.med_N, THERMAL_CUTOFF, eps, max_events, maxf)
+
+    def run_keff(self, initial_source, generations=90, inactive=30, seed=1, maxf=8):
+        from .statistics import mean_sem
+        r = np.random.default_rng(seed)
+        src = {k: np.array(initial_source[k], float) for k in
+               ("x", "y", "z", "u", "v", "w", "energy")}
+        n = src["x"].size
+        active, cyc = [], []
+        for gen in range(generations):
+            fp, fx, fy, fz, fu, fv, fw, fE, fc = self._generation(src, maxf)
+            k = float(fp.sum()) / n
+            mask = np.arange(maxf)[None, :] < fc[:, None]
+            bx, by, bz, bu, bv, bw, bE = (a[mask] for a in (fx, fy, fz, fu, fv, fw, fE))
+            produced = int(fc.sum())
+            cyc.append((gen, k, produced / n, gen >= inactive))
+            if gen >= inactive:
+                active.append(k)
+            if produced == 0:
+                break
+            pick = r.choice(produced, size=n, replace=produced < n)
+            src = {"x": bx[pick], "y": by[pick], "z": bz[pick],
+                   "u": bu[pick], "v": bv[pick], "w": bw[pick], "energy": bE[pick]}
+        keff, ksem = mean_sem(active)
+        return {"k_eff": keff, "k_sem": ksem, "active_k": active, "cycles": cyc}
