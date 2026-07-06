@@ -1000,7 +1000,18 @@ def keff_generation_multi(x0, y0, z0, u0, v0, w0, E0,
 class MultiKeffProblem:
     """Stage-3b multi-nuclide analog criticality: isotope selection + URR +
     per-nuclide elastic/discrete-inelastic/capture/fission over compiled CSG
-    (reflective BCs supported). Thermal lattices; fast (n,2n) is Stage 4."""
+    (reflective BCs supported).
+
+    KNOWN LIMITATION (BEAVRS pin cell reads +920 pcm high vs the vector/scalar
+    engines, root-caused): continuum inelastic (MT91) and (n,2n)/(n,3n) (MT16/17)
+    are approximated by the discrete two-body path (level Q, one neutron out)
+    instead of their tabulated continuum secondary-energy distribution
+    (Law61/Kalbach) with (n,xn) multiplication. This removes less energy per
+    inelastic collision, so fast neutrons slow less deep into the U238
+    resonances -> less capture -> higher k. With inelastic disabled njit and
+    vector agree to ~30 pcm (1.3070 vs 1.3067); the entire pin-cell gap is this
+    deferred Stage-4 secondary-energy treatment. Exact for fixed-source and
+    thermal-dominated problems; port the continuum secondary energy to close it."""
 
     def __init__(self, reader, mediums):
         from .numba_geometry import CompiledGeometry
