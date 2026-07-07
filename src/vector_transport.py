@@ -309,6 +309,36 @@ class VectorXS:
             Sfis += fis * scale
         return Sel, Sin, Scap, Sfis, Sel + Sin + Scap + Sfis
 
+    def total_table(self):
+        """Precomputed macroscopic total Sigma_t(E) for the whole medium on
+        the union of its nuclide grids (built lazily, cached). Exact under
+        linear interpolation: the union grid contains every constituent
+        node, so one gather reproduces the per-nuclide sum. Flights outside
+        every URR window need only this."""
+        if not hasattr(self, "_tot_grid"):
+            grids = [tbl["grid"] for _, tbl in self.nuclides]
+            ug = np.unique(np.concatenate(grids))
+            tot = np.zeros(ug.size)
+            for iso, tbl in self.nuclides:
+                micro = tbl["el"] + tbl["in"] + tbl["cap"] + tbl["fis"]
+                tot += 1e-24 * iso.number_density * np.interp(ug, tbl["grid"], micro)
+            self._tot_grid, self._tot_macro = ug, tot
+        return self._tot_grid, self._tot_macro
+
+    def urr_windows(self, reader):
+        """(emin, emax) per URR nuclide in this medium (cached); lanes inside
+        any window take the stochastic band-sampling path."""
+        if not hasattr(self, "_urr_win"):
+            win = []
+            for iso, _tbl in self.nuclides:
+                if iso.element not in reader._urr_cache:
+                    reader._load_urr(iso.element)
+                urr = reader._urr_cache[iso.element]
+                if urr is not None:
+                    win.append((urr["emin"], urr["emax"]))
+            self._urr_win = win
+        return self._urr_win
+
     def per_nuclide(self, energy):
         """Per-nuclide (elastic, inelastic, capture, fission) macroscopic
         arrays, each of shape (n_nuclides, n_particles) — the vector analogue
@@ -905,8 +935,11 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
             np.add.at(leaked_Ew, hist[g], E[g] * wgt[g])
             alive[g] = False
 
-        # one cross-section evaluation per lane per event, shared by the
-        # flight sampling AND the collision channel selection (scalar parity)
+        # Flight cross sections. Lanes outside every URR window need only the
+        # medium's precomputed total (one gather on the union grid); their
+        # per-nuclide channels are resolved at the collision, deterministically
+        # identical. Lanes inside a URR window keep the full stochastic path —
+        # the sampled bands must feed flight AND collision from ONE draw.
         group = {}
         Sigma_t = np.zeros(idx.size)
         col_of = np.full(idx.size, -1, dtype=np.int64)
@@ -915,11 +948,20 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
             if tbl is None:
                 continue  # void streams
             in_m = np.nonzero(midx == m_i)[0]
-            el, inl, cap, fis = _lane_xs(reader, tbl, E[idx[in_m]], rng)
-            group[m_i] = (el, inl, cap, fis)
-            col_of[in_m] = np.arange(in_m.size)
-            Sigma_t[in_m] = (el.sum(axis=0) + inl.sum(axis=0)
-                             + cap.sum(axis=0) + fis.sum(axis=0))
+            Em = E[idx[in_m]]
+            urr = np.zeros(in_m.size, dtype=bool)
+            for lo, hi in tbl.urr_windows(reader):
+                urr |= (Em >= lo) & (Em <= hi)
+            fast = ~urr
+            if fast.any():
+                tg, tm = tbl.total_table()
+                Sigma_t[in_m[fast]] = np.interp(Em[fast], tg, tm)
+            if urr.any():
+                el, inl, cap, fis = _lane_xs(reader, tbl, Em[urr], rng)
+                group[m_i] = (el, inl, cap, fis)
+                col_of[in_m[urr]] = np.arange(int(urr.sum()))
+                Sigma_t[in_m[urr]] = (el.sum(axis=0) + inl.sum(axis=0)
+                                      + cap.sum(axis=0) + fis.sum(axis=0))
 
         si = np.full(idx.size, np.inf)
         interacting = Sigma_t > 0
@@ -960,7 +1002,22 @@ def run_transport(reader, mediums, source, rng, settings, legacy=None,
             vxs = xs_tables[m_i]
             counters["collisions"] += int(g.size)
 
-            el, inl, cap, fis = (a[:, cols].copy() for a in group[m_i])
+            # channel stacks: URR lanes reuse the flight-stage band-sampled
+            # values (cols >= 0); the rest are resolved now from the smooth
+            # data — the same values the flight loop used to compute
+            fast_c = cols < 0
+            nk_m = len(vxs.nuclides)
+            el = np.empty((nk_m, g.size)); inl = np.empty((nk_m, g.size))
+            cap = np.empty((nk_m, g.size)); fis = np.empty((nk_m, g.size))
+            if fast_c.any():
+                ef, inf_, cf, ff = vxs.per_nuclide(E[g[fast_c]])
+                el[:, fast_c] = ef; inl[:, fast_c] = inf_
+                cap[:, fast_c] = cf; fis[:, fast_c] = ff
+            if (~fast_c).any():
+                eu, iu, cu, fu = group[m_i]
+                uc = cols[~fast_c]
+                el[:, ~fast_c] = eu[:, uc]; inl[:, ~fast_c] = iu[:, uc]
+                cap[:, ~fast_c] = cu[:, uc]; fis[:, ~fast_c] = fu[:, uc]
             Ssc = el.sum(axis=0) + inl.sum(axis=0)
             St = Ssc + cap.sum(axis=0) + fis.sum(axis=0)
 
