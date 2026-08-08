@@ -549,6 +549,35 @@ def make_result(case_name, isotope, geometry, energy_mev,
     }
 
 
+# Set by run_all.py --plots (or by a script that wants the panels).  Left as
+# None the suite behaves exactly as before and never imports matplotlib.
+PLOTS = False
+
+
+def _maybe_plot(case, omc, pyn, result):
+    """Emit a per-case spectrum panel when plotting is switched on.
+
+    A failure to draw must never take down a validation run, so this reports
+    the problem and carries on -- the numbers are the deliverable, the figure
+    is a convenience.
+    """
+    if not PLOTS or omc is None or 'spectrum' not in omc or 'spectrum' not in pyn:
+        return
+    try:
+        from tools import plot_spectra
+        plot_spectra.configure()
+        plot_spectra.plot_case(
+            case_name = case['name'],
+            e_bins    = energy_grid(case['E']),
+            omc       = omc,
+            pyn       = pyn,
+            chi2_dof  = result.get('spectrum_chi2_dof'),
+            status    = result.get('spectrum_status'),
+        )
+    except Exception as exc:                       # pragma: no cover
+        print(f"      [plot skipped: {type(exc).__name__}: {exc}]")
+
+
 def validate_case(case, n_particles=10000, isotope=None, n_batches=N_BATCHES):
     """
     Run both codes for a case dict and return a result row.  OpenMC is run
@@ -557,7 +586,7 @@ def validate_case(case, n_particles=10000, isotope=None, n_batches=N_BATCHES):
     """
     pyn = run_pyneut(case, n_particles, n_batches)
     omc = run_openmc(case, n_particles, batches=n_batches)
-    return make_result(
+    result = make_result(
         case_name     = case['name'],
         isotope       = isotope or case['el'],
         geometry      = case['geo'],
@@ -566,6 +595,8 @@ def validate_case(case, n_particles=10000, isotope=None, n_batches=N_BATCHES):
         pyn           = pyn,
         openmc_source = 'live' if omc is not None else 'N/A',
     )
+    _maybe_plot(case, omc, pyn, result)
+    return result
 
 
 def print_result(r):

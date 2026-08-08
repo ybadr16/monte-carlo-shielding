@@ -31,7 +31,12 @@ cd Validation/OpenMC_Comparison
 python run_all.py
 
 # Faster smoke test, subset of isotopes
+# (a subset run writes validation_results_subset.csv and leaves the
+#  full-suite table alone)
 python run_all.py --n 2000 --isotopes Pb208,Fe56
+
+# Full suite, plus a leakage-spectrum panel per case in docs/images/cases/
+python run_all.py --plots
 
 # Cross-section reader check only
 python validate_xs.py

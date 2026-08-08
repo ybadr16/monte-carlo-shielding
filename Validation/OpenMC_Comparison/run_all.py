@@ -9,8 +9,14 @@ Usage
 -----
   cd Validation/OpenMC_Comparison
   python run_all.py [--n <particles>] [--skip-xs] [--isotopes Pb208,Fe56,...]
+                    [--plots]
 
 Default: N=10 000 particles per case, all isotopes, XS check included.
+
+A run restricted with --isotopes writes validation_results_subset.csv, so a
+smoke test cannot overwrite the full-suite table the README and the paper
+read.  --plots additionally writes a leakage-spectrum panel per case into
+docs/images/cases/.
 """
 import argparse
 import csv
@@ -71,7 +77,14 @@ def main():
                         help='Skip the cross-section interpolation check')
     parser.add_argument('--isotopes', type=str, default='',
                         help='Comma-separated subset, e.g. Pb208,Fe56')
+    parser.add_argument('--plots', action='store_true',
+                        help='Also write a per-case leakage-spectrum panel '
+                             'into docs/images/cases/')
     args = parser.parse_args()
+
+    if args.plots:
+        import _common
+        _common.PLOTS = True
 
     wanted = set(args.isotopes.split(',')) if args.isotopes else set(_MODULES)
     wanted = {k for k in wanted if k}   # drop empty strings
@@ -117,11 +130,21 @@ def main():
     # -------------------------------------------------------------------------
     # Write CSV
     # -------------------------------------------------------------------------
-    with open(CSV_PATH, 'w', newline='') as f:
+    # A partial run goes to its own file. validation_results.csv is the table
+    # the README, the paper and tools/make_figures.py all read, so a quick
+    # `--isotopes Pb208` smoke test must not be able to replace thirteen
+    # cases at N=10 000 with three at N=2 000.
+    partial = wanted != set(_MODULES)
+    csv_path = (os.path.join(HERE, 'validation_results_subset.csv')
+                if partial else CSV_PATH)
+    with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(all_results)
-    print(f'\n  Results written to: {os.path.relpath(CSV_PATH, HERE)}')
+    print(f'\n  Results written to: {os.path.relpath(csv_path, HERE)}')
+    if partial:
+        print('  (subset run — the full-suite validation_results.csv is '
+              'left untouched)')
 
     # Pin the results to the snapshot of the nuclear data they were measured
     # against. Written as a sidecar rather than a CSV comment so that readers
@@ -132,8 +155,10 @@ def main():
     from datetime import date
     from _common import data_manifest
     man = dict(data_manifest(), measured=date.today().isoformat(),
-               n_particles=args.n, applies_to=os.path.basename(CSV_PATH))
-    man_path = os.path.join(HERE, 'validation_manifest.json')
+               n_particles=args.n, applies_to=os.path.basename(csv_path))
+    man_path = os.path.join(
+        HERE, 'validation_manifest_subset.json' if partial
+        else 'validation_manifest.json')
     with open(man_path, 'w') as f:
         json.dump(man, f, indent=1)
     print(f"  data manifest: sha256={man['sha256']} ({man['n_files']} files)"

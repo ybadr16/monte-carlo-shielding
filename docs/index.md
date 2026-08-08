@@ -46,6 +46,16 @@ user-defined materials and geometries, driven by ENDF/B-VIII nuclear data.
 ✅ Parallel particle tracking via `multiprocessing`
 ✅ Cartesian mesh tally → VTK (ParaView) and optional trajectory recording
 
+<p align="center">
+  <img src="images/geometry_pincell.png"
+       alt="Material map of the BEAVRS pin cell: UO2 fuel, helium gap, Zircaloy-4 clad and borated water"
+       width="66%">
+</p>
+
+Geometry is sampled with the same containment test the tracker uses, so a
+material map shows exactly what the transport sees — priorities included.
+Render one for any model with `tools/plot_geometry.py`.
+
 ---
 
 ## Validation

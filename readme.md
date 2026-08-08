@@ -35,6 +35,16 @@ PyNeut implements continuous-energy neutron physics, including:
 - k-eigenvalue (criticality) via a fission-source power iteration with ν and a Watt χ spectrum
 - Parallel particle tracking via `multiprocessing`, mesh tallies (VTK) and trajectory recording
 
+<p align="center">
+  <img src="docs/images/geometry_pincell.png"
+       alt="Material map of the BEAVRS pin cell: UO2 fuel, helium gap, Zircaloy-4 clad and borated water"
+       width="66%">
+</p>
+
+Geometry is sampled with the same containment test the tracker uses, so a
+material map shows exactly what the transport sees — priorities included.
+Render one for any model with `tools/plot_geometry.py`.
+
 ## Requirements
 
 - Python 3.x
@@ -174,6 +184,17 @@ files (ten of the thirteen cases) previously supplied the element's molar mass
 in g/mol, which handed the
 two codes different masses *and* number densities (0.5–1.0 %) and produced a
 spurious 2.1σ escape-energy warning on `c12_cyl_2mev`.
+
+<p align="center">
+  <img src="docs/images/cases/spectrum_pb208_n2n.png"
+       alt="Pb208 14 MeV leakage spectrum from both codes with their ratio below, showing PyNeut low between 4 and 6 MeV"
+       width="62%">
+</p>
+
+`python run_all.py --plots` writes one of these per case into
+`docs/images/cases/`. The panel above is what a POOR spectrum verdict looks
+like: integrals and mean escape energy both pass, while the ratio panel shows
+where the shape actually departs.
 
 The (n,2n) cases pass on integrals and mean
 escape energy but their **leakage spectrum shape** is POOR. The single-collision
