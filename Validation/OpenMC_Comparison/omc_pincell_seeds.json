@@ -1,12 +1,15 @@
 {
-  "openmc_seeds": [
-    1.28754,
-    1.28955,
-    1.28841,
-    1.28889,
-    1.28982
-  ],
-  "mean": 1.28885,
-  "std": 0.00091,
-  "sem": 0.00041
+ "openmc_seeds": [
+  1.29229,
+  1.29448,
+  1.29378,
+  1.28945,
+  1.29321,
+  1.29153
+ ],
+ "mean": 1.29246,
+ "std": 0.00181,
+ "sem": 0.00074,
+ "config": "6 seeds, N=10000, gens=90, inactive=30, matched physics",
+ "data_note": "Regenerated 2026-07-07 on the current endfb snapshot; pre-2026-07-05 values are not comparable."
 }

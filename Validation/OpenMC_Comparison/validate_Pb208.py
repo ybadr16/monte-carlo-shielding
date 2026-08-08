@@ -13,11 +13,11 @@ geometry and source to PyNeut.
 from _common import validate_case, print_result
 
 _CASES = [
-    {'name': 'pb208_elastic', 'el': 'Pb208', 'rho': 11.35, 'A': 207.2,
+    {'name': 'pb208_elastic', 'el': 'Pb208', 'rho': 11.35, 'A': 206.190,
      'E': 2e6,  'geo': 'sphere', 'dims': [10.0]},
-    {'name': 'pb208_5mev',    'el': 'Pb208', 'rho': 11.35, 'A': 207.2,
+    {'name': 'pb208_5mev',    'el': 'Pb208', 'rho': 11.35, 'A': 206.190,
      'E': 5e6,  'geo': 'sphere', 'dims': [10.0]},   # inelastic onset
-    {'name': 'pb208_n2n',     'el': 'Pb208', 'rho': 11.35, 'A': 207.2,
+    {'name': 'pb208_n2n',     'el': 'Pb208', 'rho': 11.35, 'A': 206.190,
      'E': 14e6, 'geo': 'sphere', 'dims': [10.0]},
 ]
 

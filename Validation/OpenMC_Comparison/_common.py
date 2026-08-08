@@ -97,6 +97,53 @@ def get_reader():
 # PyNeut runner
 # ---------------------------------------------------------------------------
 
+def data_manifest(endf_path=None):
+    """Fingerprint of the nuclear-data directory a result was measured against.
+
+    A cross-code comparison is a statement about a code pair AND a snapshot of
+    the evaluation files: refreshing endfb/neutron moved the BEAVRS pin cell by
+    a few hundred pcm in both codes, which once masqueraded as a transport bias.
+    Every recorded reference therefore carries this digest, so two numbers can
+    be checked for comparability before they are differenced.
+
+    Returns {'n_files', 'total_bytes', 'sha256'}, the digest being over the
+    sorted (name, size) pairs of endfb/neutron/*.h5 -- cheap, and sensitive to
+    any file being added, removed or replaced.
+    """
+    import glob
+    import hashlib
+    base = endf_path or ENDF_PATH
+    files = sorted(glob.glob(os.path.join(base, 'neutron', '*.h5')))
+    h = hashlib.sha256()
+    total = 0
+    for f in files:
+        size = os.path.getsize(f)
+        total += size
+        h.update(f"{os.path.basename(f)}:{size}\n".encode())
+    return {'n_files': len(files), 'total_bytes': total,
+            'sha256': h.hexdigest()[:16]}
+
+
+def _assert_awr_matches_data(element, A, tol=1e-3):
+    """Fail loudly if a case's A is not the data file's atomic-weight ratio.
+
+    Both codes must see the same target mass; see the note in run_pyneut.
+    """
+    import h5py
+    path = os.path.join(ENDF_PATH, 'neutron', f'{element}.h5')
+    if not os.path.exists(path):
+        return
+    with h5py.File(path, 'r') as f:
+        grp = f[element] if element in f else f[f'neutron/{element}']
+        awr = float(grp.attrs['atomic_weight_ratio'])
+    if abs(A / awr - 1.0) > tol:
+        raise ValueError(
+            f"{element}: case A={A} is {100 * (A / awr - 1):+.2f}% off the data "
+            f"file's atomic_weight_ratio={awr:.5f}. A must be the AWR "
+            f"(mass/neutron mass), not the molar mass in g/mol — otherwise "
+            f"PyNeut and OpenMC run different masses and number densities.")
+
+
 def run_pyneut(case, n_particles=10000, n_batches=N_BATCHES):
     """
     Run a PyNeut shielding simulation for a test case dict.
@@ -119,6 +166,15 @@ def run_pyneut(case, n_particles=10000, n_batches=N_BATCHES):
     # sampler's target ~0.9% too light and its number density ~0.9% too high,
     # which for a light moderator biases the thermal escape spectrum hot. OpenMC
     # uses the true isotopic mass, so the mass must be A * NEUTRON_MASS_AMU here.
+    #
+    # For the same reason case['A'] must be the file's AWR and not the element's
+    # molar mass in g/mol: OpenMC builds its material from rho plus its own
+    # atomic mass, so a case that supplies (say) 55.845 for Fe56 instead of
+    # 55.4544 hands the two codes different kinematic masses AND different
+    # number densities, which is a model difference rather than the kernel
+    # difference the suite is meant to measure. Six case files carried the molar
+    # mass until 2026-08-02; the check below stops that from recurring.
+    _assert_awr_matches_data(case['el'], case['A'])
     mat = Material(case['el'], case['rho'],
                    case['A'] * NEUTRON_MASS_AMU, case['A'])
     N = mat.number_density

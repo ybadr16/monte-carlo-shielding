@@ -128,7 +128,10 @@ def run_vector_case(reader, case, n):
 
 def scalar_rate(reader, case, n):
     """Single-core scalar-kernel throughput on the same case (histories/s)."""
-    mat = Material(case['el'], case['rho'], case['A'], case['A'])
+    # Same mass convention as run_vector/_common: A is the atomic-weight ratio,
+    # so the molar mass is A * m_neutron (not A).
+    mat = Material(case['el'], case['rho'], case['A'] * NEUTRON_MASS_AMU,
+                   case['A'])
     mediums = build_geometry(case)
     settings = Settings('shielding', n)
     sampler = VelocitySampler(mat.kg_mass)

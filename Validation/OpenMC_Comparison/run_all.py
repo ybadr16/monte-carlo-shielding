@@ -123,6 +123,22 @@ def main():
         writer.writerows(all_results)
     print(f'\n  Results written to: {os.path.relpath(CSV_PATH, HERE)}')
 
+    # Pin the results to the snapshot of the nuclear data they were measured
+    # against. Written as a sidecar rather than a CSV comment so that readers
+    # of the CSV (run_all_vector.load_reference) are unaffected. Two results
+    # with different digests are not comparable at the pcm level -- see the
+    # pin-cell data-snapshot episode in the paper.
+    import json
+    from datetime import date
+    from _common import data_manifest
+    man = dict(data_manifest(), measured=date.today().isoformat(),
+               n_particles=args.n, applies_to=os.path.basename(CSV_PATH))
+    man_path = os.path.join(HERE, 'validation_manifest.json')
+    with open(man_path, 'w') as f:
+        json.dump(man, f, indent=1)
+    print(f"  data manifest: sha256={man['sha256']} ({man['n_files']} files)"
+          f" -> {os.path.basename(man_path)}")
+
 
 if __name__ == '__main__':
     main()

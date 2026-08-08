@@ -11,11 +11,11 @@ OpenMC references are computed live against the local data library.
 from _common import validate_case, print_result
 
 _CASES = [
-    {'name': 'fe56_slab_14mev',   'el': 'Fe56', 'rho': 7.87, 'A': 55.845,
+    {'name': 'fe56_slab_14mev',   'el': 'Fe56', 'rho': 7.87, 'A': 55.4544,
      'E': 14e6, 'geo': 'slab',   'dims': [2.0]},
-    {'name': 'fe56_sphere_1mev',  'el': 'Fe56', 'rho': 7.87, 'A': 55.845,
+    {'name': 'fe56_sphere_1mev',  'el': 'Fe56', 'rho': 7.87, 'A': 55.4544,
      'E': 1e6,  'geo': 'sphere', 'dims': [10.0]},   # fast elastic + inelastic
-    {'name': 'fe56_sphere_25kev', 'el': 'Fe56', 'rho': 7.87, 'A': 55.845,
+    {'name': 'fe56_sphere_25kev', 'el': 'Fe56', 'rho': 7.87, 'A': 55.4544,
      'E': 25e3, 'geo': 'sphere', 'dims': [15.0]},
 ]
 
