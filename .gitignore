@@ -19,3 +19,6 @@ paper_template/
 paper_speed/
 endfb/
 joss/
+# Subset validation runs (smoke tests, not the reference table)
+Validation/OpenMC_Comparison/validation_results_subset.csv
+Validation/OpenMC_Comparison/validation_manifest_subset.json

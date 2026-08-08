@@ -12,6 +12,17 @@ user-defined materials and geometries, driven by ENDF/B-VIII nuclear data.
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Validated vs OpenMC](https://img.shields.io/badge/validated%20vs-OpenMC-success.svg)](#validation)
 
+<p align="center">
+  <img src="images/validation_summary.png"
+       alt="Every PyNeut validation case plotted against OpenMC as a z-score; twelve of thirteen fall inside the two-sigma agreement band"
+       width="88%">
+</p>
+
+<p align="center">
+  <img src="images/xs_verification.png" alt="U235 cross sections read by PyNeut overlaid on OpenMC" width="49%">
+  <img src="images/leakage_spectra.png" alt="Leakage spectra from PyNeut and OpenMC" width="49%">
+</p>
+
 ---
 
 ## Quick Links
@@ -34,6 +45,16 @@ user-defined materials and geometries, driven by ENDF/B-VIII nuclear data.
 ✅ **k-eigenvalue (criticality)** via a fission-source power iteration (ν + Watt χ)
 ✅ Parallel particle tracking via `multiprocessing`
 ✅ Cartesian mesh tally → VTK (ParaView) and optional trajectory recording
+
+<p align="center">
+  <img src="images/geometry_pincell.png"
+       alt="Material map of the BEAVRS pin cell: UO2 fuel, helium gap, Zircaloy-4 clad and borated water"
+       width="66%">
+</p>
+
+Geometry is sampled with the same containment test the tracker uses, so a
+material map shows exactly what the transport sees — priorities included.
+Render one for any model with `tools/plot_geometry.py`.
 
 ---
 
@@ -183,6 +204,11 @@ graded by the k_eff z-score:
 | 8.7 (supercritical) | 1.02999 ± 0.00250 | 1.0242 ± 0.0015 | 2.0 | OK |
 | 11.0 (supercritical) | 1.23619 ± 0.00311 | 1.2283 ± 0.0019 | 2.2 | WARN |
 
+<p align="center">
+  <img src="images/keff_vs_radius.png" alt="k_eff versus bare U235 sphere radius for PyNeut and OpenMC" width="49%">
+  <img src="images/keff_convergence.png" alt="Fission-source convergence of k_eff over successive generations" width="49%">
+</p>
+
 The sweep crosses k = 1 at **R ≈ 8.4 cm** (k = 1.0013 ± 0.0027), the critical
 radius of *pure* U235 metal at 18.74 g/cm³; Godiva's 8.7407 cm belongs to the
 93.7 %-enriched alloy, which carries the U238/U234 this bare model omits, and
@@ -203,6 +229,12 @@ compared to the published k_eff ≡ 1.0000:
 | Godiva (HEU-MET-FAST-001) | U235 | 1.0014 ± 0.0021 | 1.0000 ± 0.0013 | 0.6 | 0.6 |
 | Jezebel-23 (U233-MET-FAST-001) | U233 | 0.9981 ± 0.0020 | 1.0011 ± 0.0013 | 1.3 | 0.8 |
 | Jezebel (PU-MET-FAST-001) | Pu239 | 1.0000 ± 0.0022 | 0.9991 ± 0.0012 | 0.4 | 0.0 |
+
+<p align="center">
+  <img src="images/icsbep_benchmarks.png"
+       alt="PyNeut and OpenMC k_eff for the Godiva, Jezebel-23 and Jezebel benchmarks against the published unity value"
+       width="72%">
+</p>
 
 Across **three fissile isotopes** (U235, U233, Pu239) PyNeut reproduces each
 recognized benchmark within **z ≤ 1.4 of the evaluated k_eff** and **z ≤ 1.2 of
