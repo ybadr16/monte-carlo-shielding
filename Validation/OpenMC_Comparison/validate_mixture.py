@@ -10,7 +10,11 @@ atoms/cm^3), so any difference is transport, not the material spec or the data.
 Graded by the same leakage / escape-energy z-score and spectrum chi2/dof as the
 rest of the suite.
 
-Run:  python validate_mixture.py [--n 20000]
+Run:  python validate_mixture.py [--n 40000]
+
+At the default N=40,000 this reproduces the mixture table in the paper:
+leakage 0.69090 +/- 0.00280 (OpenMC) vs 0.69077 +/- 0.00157 (PyNeut), z=0.0;
+mean escape energy 772,558 vs 771,890 eV, z=0.4; spectrum chi2/dof = 1.37.
 """
 import argparse
 import os
@@ -149,7 +153,8 @@ def _z(a, sa, b, sb):
 
 def main():
     ap = argparse.ArgumentParser(description="PyNeut vs OpenMC mixture validation")
-    ap.add_argument("--n", type=int, default=20000, help="histories")
+    ap.add_argument("--n", type=int, default=40000,
+                    help="histories (default reproduces the paper's mixture table)")
     args = ap.parse_args()
 
     iso = ", ".join(f"{el} ({nd:.3e}/cm³)" for el, _, _, nd in COMPONENTS)
@@ -169,8 +174,8 @@ def main():
     print("-" * 55)
     print(f"{'leakage':<16}{omc['leakage']:>10.5f} ± {omc['leakage_sem']:.5f}"
           f"{'':>0}  {pyn['leakage']:>8.5f} ± {pyn['leakage_sem']:.5f}{z_leak:>7.1f}")
-    print(f"{'avg energy (eV)':<16}{omc['avg_energy']:>10.0f}        "
-          f"  {pyn['avg_energy']:>8.0f}        {z_e:>7.1f}")
+    print(f"{'avg energy (eV)':<16}{omc['avg_energy']:>10.0f} ± {omc['avg_energy_sem']:.0f}"
+          f"{'':>0}  {pyn['avg_energy']:>8.0f} ± {pyn['avg_energy_sem']:.0f}{z_e:>7.1f}")
     integral = "OK" if max(z_leak, z_e) <= 2 else ("WARNING" if max(z_leak, z_e) <= 4 else "FAIL")
     spec = "GOOD" if chi2_dof <= 2 else ("FAIR" if chi2_dof <= 5 else "POOR")
     print(f"\nintegral: {integral}   spectrum: {spec} (χ²/dof = {chi2_dof:.2f})\n")

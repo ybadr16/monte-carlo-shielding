@@ -11,10 +11,14 @@ Cases
   cd112_thermal       : Cd112 sphere R=2 cm, E=0.0253 eV (thermal capture)
   c12_thermal         : C12 (graphite) sphere R=5 cm, E=0.0253 eV (pure scatterer)
 
-Known limitation exposed here: PyNeut's transport elastic kernel uses
-static-target kinematics (E' ∈ [αE, E], no upscatter), so a thermal neutron
-spectrum runs too cold and `c12_thermal` fails on average escape energy even
-though the leakage fraction is correct.  See docs/index.md → Limitations.
+History: these two thermal cases were once the suite's only failures. Below
+THERMAL_KINEMATICS_CUTOFF (10 eV) the elastic branch now routes through the
+free-gas kernel, so the target nucleus moves, neutrons can up-scatter and the
+spectrum equilibrates to 294 K; three further errors in that kernel (flight-XS
+re-broadening, the SVT branch probability, and the sampler mass) were closed
+afterwards. Both cases now agree with OpenMC on the mean escape energy within
+0.4 sigma with a GOOD spectrum shape. The remaining limitation is that thermal
+scattering is free-gas only: there is no bound-atom S(alpha,beta) kernel.
 """
 from _common import validate_case, print_result
 

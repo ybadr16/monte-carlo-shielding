@@ -70,9 +70,9 @@
   </geometry>
   <settings>
     <run_mode>eigenvalue</run_mode>
-    <particles>3000</particles>
-    <batches>12</batches>
-    <inactive>4</inactive>
+    <particles>800</particles>
+    <batches>40</batches>
+    <inactive>10</inactive>
     <source particle="neutron" strength="1.0" type="independent">
       <space type="box">
         <parameters>-0.39218 -0.39218 -0.62992 0.39218 0.39218 0.62992</parameters>
@@ -85,6 +85,7 @@
       <summary>false</summary>
       <tallies>false</tallies>
     </output>
+    <seed>1</seed>
     <verbosity>1</verbosity>
     <temperature_default>294.0</temperature_default>
     <temperature_method>nearest</temperature_method>

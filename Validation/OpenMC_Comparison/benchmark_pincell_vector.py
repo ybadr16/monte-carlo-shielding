@@ -6,8 +6,8 @@ generation through the event-based vector engine (run_keff_vector). Reports
 k_inf (collision estimator), the per-generation throughput, and the
 comparison against the committed 5-seed references in
 pincell_reference.json (PyNeut scalar 1.29297 +/- 0.00069, OpenMC
-1.29225 +/- 0.00069, matched physics, regenerated 2026-07-07 on the
-current endfb snapshot — see the file's data_note).
+1.29225 +/- 0.00069, matched physics — see the file's data_note for the
+data snapshot those values belong to).
 
 Run:  python benchmark_pincell_vector.py [--n 3000 --gens 140 --inactive 40]
       python benchmark_pincell_vector.py --quick

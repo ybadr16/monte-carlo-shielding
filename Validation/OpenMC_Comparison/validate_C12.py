@@ -10,7 +10,7 @@ OpenMC reference is computed live against the local data library.
 from _common import validate_case, print_result
 
 _CASES = [
-    {'name': 'c12_cyl_2mev', 'el': 'C12', 'rho': 2.267, 'A': 12.011,
+    {'name': 'c12_cyl_2mev', 'el': 'C12', 'rho': 2.267, 'A': 11.89365,
      'E': 2e6, 'geo': 'cyl', 'dims': [10.0, 10.0]},   # [radius, half-height] cm
 ]
 

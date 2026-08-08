@@ -34,7 +34,11 @@ from src.criticality import run_keff, uniform_sphere_source  # noqa: E402
 # Bare U235 metal: density and atomic-weight ratio (ENDF/B-VIII).
 U235_RHO, U235_M, U235_A = 18.74, 235.0, 233.0248
 
-# Bare U235 critical radius is ~8.7 cm; bracket it.
+# Pure U235 metal at 18.74 g/cm3 goes critical near R = 8.4 cm (the sweep in
+# paper_template/make_figures.py crosses k=1 there: k=1.0013 +/- 0.0027 at
+# 8.4 cm, 1.0300 +/- 0.0025 at 8.7 cm). Godiva's 8.7407 cm is the radius of the
+# 93.7%-enriched alloy, which carries U238/U234 this bare model omits.
+# These three radii bracket criticality for the code-to-code comparison.
 RADII = [6.0, 8.7, 11.0]
 
 # ICSBEP bare fast-metal critical benchmarks (k_eff ≡ 1.0000 by construction).

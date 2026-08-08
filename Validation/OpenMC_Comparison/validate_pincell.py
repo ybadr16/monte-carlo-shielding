@@ -23,7 +23,20 @@ far more expensive than the leakage-dominated fast-metal spheres in
 validate_keff.py (order 100x more collisions per history). The OpenMC reference
 is quick; budget accordingly for the pure-Python run, or use a smaller --n.
 
-Run:  python validate_pincell.py --endf /path/to/endfb [--n 2000 --gens 100]
+The defaults are the schedule reported in the paper: 3,000 neutrons/generation
+in PyNeut against 8,000 in OpenMC, 140 generations discarding the first 40, and
+five independent seeds per code. Because an all-reflective lattice has a
+dominance ratio near unity, the single-run standard error understates the true
+spread, so sigma is the spread across seeds rather than the batch-means error
+of one run. At those settings the reference result is PyNeut 1.29297 +/-
+0.00069 against OpenMC 1.29225 +/- 0.00069, a gap of +72 +/- 98 pcm (z = 0.74);
+see pincell_reference.json, whose data_note records the nuclear-data snapshot
+those numbers belong to.
+
+Budget: the full default run is hours of pure-Python transport (see the note
+above). Use --quick for a smoke test, or --seeds 1 --n 1000 for a spot check.
+
+Run:  python validate_pincell.py --endf /path/to/endfb
       python validate_pincell.py --quick          # fast smoke test
 """
 import argparse
@@ -34,6 +47,7 @@ import sys
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REF_JSON = os.path.join(HERE, "pincell_reference.json")
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.abspath(os.path.join(HERE, '..', '..')))
 
@@ -168,7 +182,7 @@ def run_pyneut(endf, comps, n, gens, inactive, seed=1):
     return out["k_eff"], out["k_sem"]
 
 
-def run_openmc(materials, n, gens, inactive, temperature, tag):
+def run_openmc(materials, n, gens, inactive, temperature, tag, seed=None):
     import openmc
     half = PITCH / 2.0
 
@@ -200,6 +214,8 @@ def run_openmc(materials, n, gens, inactive, temperature, tag):
     settings.temperature = {'method': 'nearest', 'default': temperature}
     settings.output = {'summary': False, 'tallies': False}
     settings.verbosity = 1
+    if seed is not None:
+        settings.seed = int(seed)
     settings.source = openmc.IndependentSource(
         space=openmc.stats.Box((-R_PELLET, -R_PELLET, -half),
                                (R_PELLET, R_PELLET, half)),
@@ -226,16 +242,27 @@ def main():
     ap = argparse.ArgumentParser(description="PyNeut vs OpenMC k-inf (BEAVRS pin cell)")
     ap.add_argument("--endf", default=os.environ.get("PYNEUT_PINCELL_ENDF", DEFAULT_ENDF),
                     help="ENDF/B HDF5 base dir (must hold the 36 pin-cell nuclides)")
-    ap.add_argument("--n", type=int, default=2000, help="neutrons per generation")
-    ap.add_argument("--gens", type=int, default=100, help="total generations")
-    ap.add_argument("--inactive", type=int, default=20, help="inactive generations")
+    ap.add_argument("--n", type=int, default=3000,
+                    help="PyNeut neutrons per generation (paper: 3000)")
+    ap.add_argument("--n-omc", type=int, default=8000,
+                    help="OpenMC neutrons per generation (paper: 8000)")
+    ap.add_argument("--gens", type=int, default=140, help="total generations")
+    ap.add_argument("--inactive", type=int, default=40, help="inactive generations")
+    ap.add_argument("--seeds", type=int, default=5,
+                    help="independent replications per code (paper: 5); the "
+                         "reported sigma is the spread across seeds, not the "
+                         "single-run standard error")
+    ap.add_argument("--save-reference", action="store_true",
+                    help="write the result to pincell_reference.json (the "
+                         "artifact the paper cites)")
     ap.add_argument("--quick", action="store_true", help="fast smoke test")
     ap.add_argument("--no-realistic", action="store_true",
                     help="skip the 600 K + S(a,b) OpenMC reference run")
     args = ap.parse_args()
 
     if args.quick:
-        args.n, args.gens, args.inactive = 300, 40, 10
+        args.n, args.n_omc, args.gens, args.inactive, args.seeds = (
+            300, 800, 40, 10, 2)
 
     if not HAS_OPENMC:
         print("OpenMC not importable; cannot run the live comparison.")
@@ -249,36 +276,98 @@ def main():
         ensure_openmc_data()
 
     print(f"\nPyNeut vs OpenMC k-infinity — BEAVRS HZP pin cell "
-          f"(N={args.n}/gen, {args.gens} gens, {args.inactive} inactive)")
+          f"(N_pyn={args.n}/gen, N_omc={args.n_omc}/gen, {args.gens} gens, "
+          f"{args.inactive} inactive, {args.seeds} seeds/code)")
     print(f"data: {args.endf}\n")
 
     # --- matched physics: free-gas H, 294 K, no S(a,b), in BOTH codes ---
+    # Independent replications: an all-reflective lattice has a dominance ratio
+    # near unity, so the single-run standard error understates the true spread.
+    # Both codes are therefore replicated over independent seeds and reported as
+    # the seed mean +/- the standard error of that mean.
     matched_mats = build_openmc_materials(temperature=294.0, thermal=False)
     comps = {k: pyneut_composition(m, 294.0) for k, m in matched_mats.items()}
 
-    kp, sp = run_pyneut(args.endf, comps, args.n, args.gens, args.inactive)
-    # rebuild materials (the matched set was consumed for atom densities)
-    matched_mats = build_openmc_materials(temperature=294.0, thermal=False)
-    ko, so = run_openmc(matched_mats, args.n, args.gens, args.inactive, 294.0, "matched")
+    pyn_k, omc_k = [], []
+    for i in range(args.seeds):
+        seed = i + 1
+        k, _ = run_pyneut(args.endf, comps, args.n, args.gens, args.inactive,
+                          seed=seed)
+        pyn_k.append(k)
+        # rebuild materials (the matched set is consumed for atom densities)
+        mats = build_openmc_materials(temperature=294.0, thermal=False)
+        ko_i, _ = run_openmc(mats, args.n_omc, args.gens, args.inactive, 294.0,
+                             f"matched_seed{seed}", seed=seed)
+        omc_k.append(ko_i)
+        print(f"  seed {seed}: PyNeut {k:.5f}   OpenMC {ko_i:.5f}", flush=True)
+
+    def mean_sem(v):
+        a = np.asarray(v, dtype=float)
+        return float(a.mean()), float(a.std(ddof=1) / np.sqrt(a.size)) if a.size > 1 else 0.0
+
+    kp, sp = mean_sem(pyn_k)
+    ko, so = mean_sem(omc_k)
 
     denom = np.hypot(sp, so)
     z = abs(ko - kp) / denom if denom > 0 else float("inf")
     status = "OK" if z <= 2 else ("WARNING" if z <= 4 else "FAIL")
 
-    print("Matched physics (free-gas H, 294 K, no S(a,b)) — the validation result")
-    print(f"  PyNeut k_inf : {kp:.5f} ± {sp:.5f}")
-    print(f"  OpenMC k_inf : {ko:.5f} ± {so:.5f}")
+    print("\nMatched physics (free-gas H, 294 K, no S(a,b)) — the validation result")
+    print(f"  PyNeut k_inf : {kp:.5f} ± {sp:.5f}   (spread {np.std(pyn_k, ddof=1):.5f})")
+    print(f"  OpenMC k_inf : {ko:.5f} ± {so:.5f}   (spread {np.std(omc_k, ddof=1):.5f})")
+    print(f"  gap  : {1e5 * (kp - ko):+.0f} ± {1e5 * denom:.0f} pcm")
     print(f"  z = {z:.2f}   [{status}]   (OK <= 2, WARNING <= 4, FAIL > 4)\n")
 
+    if args.save_reference:
+        import json
+        from datetime import date
+        from _common import data_manifest
+        ref = {
+            "data_manifest": data_manifest(args.endf),
+            "pyneut_5seeds": {str(i + 1): round(v, 5) for i, v in enumerate(pyn_k)},
+            "pyneut_mean": round(kp, 5), "pyneut_sem": round(sp, 5),
+            "openmc_i40_5seeds": [round(v, 5) for v in omc_k],
+            "openmc_mean": round(ko, 5), "openmc_sem": round(so, 5),
+            "gap_pcm": round(1e5 * (kp - ko), 1), "z": round(z, 2),
+            "config": (f"{args.seeds}v{args.seeds} seeds, N_pyn={args.n} "
+                       f"N_omc={args.n_omc}, gens={args.gens}, "
+                       f"inactive={args.inactive}, matched physics"),
+            "data_note": (
+                f"Regenerated {date.today().isoformat()} by validate_pincell.py "
+                f"--save-reference against the endfb snapshot then on disk. A "
+                f"cross-code k_inf is a statement about a code pair AND a data "
+                f"snapshot: this lattice moves by ~330 pcm across an evaluation "
+                f"refresh, so values from different snapshots are not comparable."),
+        }
+        with open(REF_JSON, "w") as f:
+            json.dump(ref, f, indent=1)
+        print(f"  wrote {REF_JSON}\n")
+
     # --- realistic BEAVRS HZP (OpenMC only): documents the omitted physics ---
+    # Optional, and skipped cleanly when the library has no S(a,b) sublibrary:
+    # ensure_openmc_data() builds cross_sections.xml from endfb/neutron/*.h5,
+    # which are neutron sublibrary files only, so c_H_in_H2O is absent unless
+    # the user has pointed --endf at a full OpenMC data library. This must not
+    # take down the validation result computed above.
     if not args.no_realistic:
-        real_mats = build_openmc_materials(temperature=T_HZP, thermal=True)
-        kr, sr = run_openmc(real_mats, args.n, args.gens, args.inactive, T_HZP, "realistic")
-        print("Realistic BEAVRS HZP (600 K + c_H_in_H2O, OpenMC) — documents the gap")
-        print(f"  OpenMC k_inf : {kr:.5f} ± {sr:.5f}")
-        print(f"  realistic - matched = {kr - ko:+.5f} dk  "
-              f"({1e5 * (kr - ko):+.0f} pcm): the bound-H + temperature physics "
-              f"PyNeut does not model.\n")
+        try:
+            real_mats = build_openmc_materials(temperature=T_HZP, thermal=True)
+            kr, sr = run_openmc(real_mats, args.n_omc, args.gens, args.inactive,
+                                T_HZP, "realistic")
+        except Exception as exc:
+            first = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+            print("Realistic BEAVRS HZP (600 K + c_H_in_H2O) — SKIPPED")
+            print(f"  {first}")
+            print("  This run needs a data library carrying the thermal-scattering\n"
+                  "  sublibrary (c_H_in_H2O). It is optional: the matched-physics\n"
+                  "  comparison above is the validation result. Pass --no-realistic\n"
+                  "  to skip it silently.\n")
+        else:
+            print("Realistic BEAVRS HZP (600 K + c_H_in_H2O, OpenMC) — documents the gap")
+            print(f"  OpenMC k_inf : {kr:.5f} ± {sr:.5f}")
+            print(f"  realistic - matched = {kr - ko:+.5f} dk  "
+                  f"({1e5 * (kr - ko):+.0f} pcm): the bound-H + temperature physics "
+                  f"PyNeut does not model.\n")
 
 
 if __name__ == "__main__":
